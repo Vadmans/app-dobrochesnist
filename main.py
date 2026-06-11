@@ -8,11 +8,11 @@
 
 import os
 import uuid
-from fastapi.responses import HTMLResponse
 from datetime import date, timedelta
 from typing import List
 
 from fastapi import FastAPI, HTTPException, Depends
+from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sqlalchemy import create_engine, String, Integer, Date, JSON, Text
@@ -208,36 +208,115 @@ def seed():
 seed()
 
 
-# ── Запуск ────────────────────────────────────────────────────────────────
-# Дозволяє стартувати і командою `python main.py`, і `uvicorn main:app`.
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
-    @app.get("/admin", response_class=HTMLResponse)
+
+@app.get("/", response_class=HTMLResponse)
+def root():
+    return """
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Доброчесність API</title>
+  <style>
+    body { font-family: Arial, sans-serif; background:#eef2f5; margin:0; padding:40px; color:#1B2430; }
+    .box { max-width:800px; margin:auto; background:white; padding:30px; border-radius:16px; box-shadow:0 10px 30px rgba(0,0,0,.06); }
+    h1 { color:#1F5673; margin-top:0; }
+    a { display:inline-block; margin:8px 8px 0 0; padding:10px 14px; background:#1F5673; color:white; text-decoration:none; border-radius:8px; }
+  </style>
+</head>
+<body>
+  <div class="box">
+    <h1>Доброчесність API працює</h1>
+    <p>Сервіс успішно запущений. Мобільний додаток може отримувати події через API.</p>
+    <a href="/docs">Swagger /docs</a>
+    <a href="/admin">Адмін-панель</a>
+    <a href="/events">Події JSON</a>
+  </div>
+</body>
+</html>
+"""
+
+
+@app.get("/admin", response_class=HTMLResponse)
 def admin_panel():
     return """
 <!DOCTYPE html>
 <html lang="uk">
 <head>
   <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Адмін-панель | Доброчесність</title>
   <style>
-    body { font-family: Arial, sans-serif; background:#eef2f5; margin:0; padding:30px; }
-    .box { max-width:1100px; margin:auto; background:white; padding:25px; border-radius:14px; }
-    h1 { margin-top:0; color:#1F5673; }
-    input, textarea, select { width:100%; padding:10px; margin:6px 0 14px; border:1px solid #ccc; border-radius:8px; }
-    button { padding:10px 15px; border:0; border-radius:8px; cursor:pointer; background:#1F5673; color:white; }
-    button.del { background:#9E2F3C; }
-    button.edit { background:#A9690A; }
-    table { width:100%; border-collapse:collapse; margin-top:25px; }
-    th, td { padding:10px; border-bottom:1px solid #ddd; text-align:left; vertical-align:top; }
-    th { background:#f1f5f7; }
-    .row { display:grid; grid-template-columns:1fr 1fr; gap:15px; }
+    :root {
+      --bg:#EBEEF0;
+      --surface:#FFFFFF;
+      --ink:#1B2430;
+      --soft:#5A6577;
+      --line:#DCE1E6;
+      --accent:#1F5673;
+      --red:#9E2F3C;
+      --amber:#A9690A;
+      --green:#2C6A4E;
+    }
+    * { box-sizing:border-box; }
+    body { font-family: Arial, sans-serif; background:var(--bg); margin:0; padding:24px; color:var(--ink); }
+    .box { max-width:1200px; margin:auto; background:var(--surface); padding:24px; border-radius:16px; box-shadow:0 10px 30px rgba(0,0,0,.06); }
+    .top { display:flex; justify-content:space-between; align-items:center; gap:12px; margin-bottom:18px; }
+    h1 { margin:0; color:var(--accent); font-size:26px; }
+    .links a { color:var(--accent); margin-left:12px; text-decoration:none; font-weight:600; }
+    label { display:block; margin-bottom:5px; color:var(--soft); font-size:13px; font-weight:700; }
+    input, textarea, select {
+      width:100%; padding:10px 12px; margin:0 0 14px;
+      border:1px solid #cfd6dd; border-radius:10px; font-size:14px;
+    }
+    textarea { resize:vertical; }
+    button {
+      padding:10px 14px; border:0; border-radius:10px; cursor:pointer;
+      background:var(--accent); color:white; font-weight:700;
+    }
+    button:hover { opacity:.92; }
+    button.del { background:var(--red); }
+    button.edit { background:var(--amber); }
+    button.gray { background:#5A6577; }
+    button.green { background:var(--green); }
+    .row { display:grid; grid-template-columns:1fr 180px 220px; gap:14px; }
+    .actions { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:18px; }
+    .status { padding:10px 12px; border-radius:10px; margin:12px 0; display:none; }
+    .ok { background:#E1EEE8; color:var(--green); display:block; }
+    .err { background:#F5E2E4; color:var(--red); display:block; }
+    table { width:100%; border-collapse:collapse; margin-top:18px; }
+    th, td { padding:10px; border-bottom:1px solid var(--line); text-align:left; vertical-align:top; font-size:14px; }
+    th { background:#f1f5f7; color:var(--soft); font-size:12px; text-transform:uppercase; }
+    .muted { color:var(--soft); font-size:12px; }
+    .pill { display:inline-block; padding:4px 8px; border-radius:999px; background:#E6EEF2; color:var(--accent); font-size:12px; font-weight:700; }
+    .table-actions { display:flex; gap:6px; flex-wrap:wrap; }
+    @media (max-width:800px) {
+      body { padding:10px; }
+      .box { padding:16px; }
+      .row { grid-template-columns:1fr; gap:0; }
+      table, thead, tbody, th, td, tr { display:block; }
+      thead { display:none; }
+      tr { border:1px solid var(--line); border-radius:12px; margin-bottom:10px; padding:8px; }
+      td { border-bottom:0; padding:6px; }
+    }
   </style>
 </head>
 <body>
 <div class="box">
-  <h1>Адмін-панель “Доброчесність”</h1>
+  <div class="top">
+    <div>
+      <h1>Адмін-панель “Доброчесність”</h1>
+      <div class="muted">Керування подіями для мобільного додатку</div>
+    </div>
+    <div class="links">
+      <a href="/docs" target="_blank">/docs</a>
+      <a href="/events" target="_blank">/events</a>
+      <a href="/stats" target="_blank">/stats</a>
+    </div>
+  </div>
+
+  <div id="status" class="status"></div>
 
   <input type="hidden" id="eventId">
 
@@ -250,29 +329,39 @@ def admin_panel():
       <label>Дата</label>
       <input id="date" type="date">
     </div>
+    <div>
+      <label>Категорія</label>
+      <select id="cat">
+        <option value="declaration">Декларування</option>
+        <option value="conflict">Конфлікт інтересів</option>
+        <option value="gifts">Подарунки</option>
+        <option value="notice">Повідомлення</option>
+        <option value="training">Навчання</option>
+        <option value="restriction">Обмеження</option>
+      </select>
+    </div>
   </div>
 
-  <label>Категорія</label>
-  <select id="cat">
-    <option value="declaration">Декларування</option>
-    <option value="conflict">Конфлікт інтересів</option>
-    <option value="gifts">Подарунки</option>
-    <option value="notice">Повідомлення</option>
-    <option value="training">Навчання</option>
-    <option value="restriction">Обмеження</option>
-  </select>
+  <label>Повторюваність</label>
+  <input id="recur" placeholder="Наприклад: Щороку, до 1 квітня">
 
   <label>Опис</label>
-  <textarea id="description" rows="3"></textarea>
+  <textarea id="description" rows="3" placeholder="Короткий опис події"></textarea>
 
   <label>Інструкція для користувача</label>
-  <textarea id="instruction" rows="3"></textarea>
+  <textarea id="instruction" rows="3" placeholder="Що потрібно зробити користувачу"></textarea>
+
+  <label>Аудиторія</label>
+  <input id="audience" value="Усі працівники">
 
   <label>Нагадування, днів до події</label>
   <input id="reminders" value="30,10,3,0">
 
-  <button onclick="saveEvent()">Зберегти подію</button>
-  <button onclick="clearForm()" style="background:#5A6577">Очистити</button>
+  <div class="actions">
+    <button onclick="saveEvent()">Зберегти подію</button>
+    <button class="gray" onclick="clearForm()">Очистити</button>
+    <button class="green" onclick="loadEvents()">Оновити список</button>
+  </div>
 
   <table>
     <thead>
@@ -281,6 +370,7 @@ def admin_panel():
         <th>Дата</th>
         <th>Назва</th>
         <th>Категорія</th>
+        <th>Перегляди</th>
         <th>Дії</th>
       </tr>
     </thead>
@@ -289,38 +379,64 @@ def admin_panel():
 </div>
 
 <script>
-const API = "";
+function showStatus(text, ok=true) {
+  const el = document.getElementById("status");
+  el.className = "status " + (ok ? "ok" : "err");
+  el.textContent = text;
+  setTimeout(() => { el.style.display = "none"; }, 4000);
+  el.style.display = "block";
+}
 
 async function loadEvents() {
-  const res = await fetch(API + "/events");
-  const data = await res.json();
+  try {
+    const res = await fetch("/events");
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const data = await res.json();
 
-  const tbody = document.getElementById("events");
-  tbody.innerHTML = "";
+    const tbody = document.getElementById("events");
+    tbody.innerHTML = "";
 
-  data.forEach(ev => {
-    const tr = document.createElement("tr");
-    tr.innerHTML = `
-      <td>${ev.id}</td>
-      <td>${ev.date}</td>
-      <td><b>${ev.title}</b><br><small>${ev.description || ""}</small></td>
-      <td>${ev.cat}</td>
-      <td>
-        <button class="edit" onclick='editEvent(${JSON.stringify(ev)})'>Редагувати</button>
-        <button class="del" onclick="deleteEvent(${ev.id})">Видалити</button>
-      </td>
-    `;
-    tbody.appendChild(tr);
-  });
+    if (!data.length) {
+      tbody.innerHTML = `<tr><td colspan="6">Подій поки немає</td></tr>`;
+      return;
+    }
+
+    data.forEach(ev => {
+      const tr = document.createElement("tr");
+      const safe = JSON.stringify(ev).replaceAll("'", "&#39;");
+      tr.innerHTML = `
+        <td><span class="muted">${ev.id}</span></td>
+        <td>${ev.date || ""}</td>
+        <td>
+          <b>${ev.title || ""}</b>
+          <div class="muted">${ev.description || ""}</div>
+          <div class="muted">${ev.instruction || ""}</div>
+        </td>
+        <td><span class="pill">${ev.cat || ""}</span></td>
+        <td>${ev.views ?? 0}</td>
+        <td>
+          <div class="table-actions">
+            <button class="edit" onclick='editEvent(${safe})'>Редагувати</button>
+            <button class="del" onclick="deleteEvent('${ev.id}')">Видалити</button>
+          </div>
+        </td>
+      `;
+      tbody.appendChild(tr);
+    });
+  } catch (e) {
+    showStatus("Не вдалося завантажити події: " + e.message, false);
+  }
 }
 
 function editEvent(ev) {
-  document.getElementById("eventId").value = ev.id;
+  document.getElementById("eventId").value = ev.id || "";
   document.getElementById("title").value = ev.title || "";
   document.getElementById("date").value = ev.date || "";
   document.getElementById("cat").value = ev.cat || "declaration";
+  document.getElementById("recur").value = ev.recur || "";
   document.getElementById("description").value = ev.description || "";
   document.getElementById("instruction").value = ev.instruction || "";
+  document.getElementById("audience").value = ev.audience || "Усі працівники";
   document.getElementById("reminders").value = (ev.reminders || [30,10,3,0]).join(",");
   window.scrollTo({ top: 0, behavior: "smooth" });
 }
@@ -330,55 +446,74 @@ function clearForm() {
   document.getElementById("title").value = "";
   document.getElementById("date").value = "";
   document.getElementById("cat").value = "declaration";
+  document.getElementById("recur").value = "";
   document.getElementById("description").value = "";
   document.getElementById("instruction").value = "";
+  document.getElementById("audience").value = "Усі працівники";
   document.getElementById("reminders").value = "30,10,3,0";
 }
 
 async function saveEvent() {
-  const id = document.getElementById("eventId").value;
+  const id = document.getElementById("eventId").value.trim();
 
   const payload = {
-    title: document.getElementById("title").value,
+    title: document.getElementById("title").value.trim(),
     date: document.getElementById("date").value,
     cat: document.getElementById("cat").value,
-    description: document.getElementById("description").value,
-    instruction: document.getElementById("instruction").value,
+    recur: document.getElementById("recur").value.trim(),
+    description: document.getElementById("description").value.trim(),
+    instruction: document.getElementById("instruction").value.trim(),
+    audience: document.getElementById("audience").value.trim() || "Усі працівники",
     reminders: document.getElementById("reminders").value
       .split(",")
       .map(x => Number(x.trim()))
       .filter(x => !isNaN(x))
   };
 
-  const url = id ? `/events/${id}` : "/events";
-  const method = id ? "PUT" : "POST";
-
-  const res = await fetch(url, {
-    method,
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload)
-  });
-
-  if (!res.ok) {
-    alert("Помилка збереження: " + res.status);
+  if (!payload.title || !payload.date || !payload.cat) {
+    showStatus("Заповни назву, дату та категорію", false);
     return;
   }
 
-  clearForm();
-  loadEvents();
+  const url = id ? `/events/${id}` : "/events";
+  const method = id ? "PUT" : "POST";
+
+  try {
+    const res = await fetch(url, {
+      method,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+
+    if (!res.ok) {
+      const txt = await res.text();
+      throw new Error("HTTP " + res.status + " " + txt);
+    }
+
+    clearForm();
+    await loadEvents();
+    showStatus(id ? "Подію оновлено" : "Подію створено");
+  } catch (e) {
+    showStatus("Помилка збереження: " + e.message, false);
+  }
 }
 
 async function deleteEvent(id) {
   if (!confirm("Видалити цю подію?")) return;
 
-  const res = await fetch(`/events/${id}`, { method: "DELETE" });
+  try {
+    const res = await fetch(`/events/${id}`, { method: "DELETE" });
 
-  if (!res.ok) {
-    alert("Помилка видалення: " + res.status);
-    return;
+    if (!res.ok && res.status !== 204) {
+      const txt = await res.text();
+      throw new Error("HTTP " + res.status + " " + txt);
+    }
+
+    await loadEvents();
+    showStatus("Подію видалено");
+  } catch (e) {
+    showStatus("Помилка видалення: " + e.message, false);
   }
-
-  loadEvents();
 }
 
 loadEvents();
@@ -386,3 +521,10 @@ loadEvents();
 </body>
 </html>
 """
+
+
+# ── Запуск ────────────────────────────────────────────────────────────────
+# Дозволяє стартувати і командою `python main.py`, і `uvicorn main:app`.
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
