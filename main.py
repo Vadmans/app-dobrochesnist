@@ -8,6 +8,7 @@
 
 import os
 import uuid
+from fastapi.responses import HTMLResponse
 from datetime import date, timedelta
 from typing import List
 
@@ -212,3 +213,176 @@ seed()
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    @app.get("/admin", response_class=HTMLResponse)
+def admin_panel():
+    return """
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+  <meta charset="UTF-8">
+  <title>Адмін-панель | Доброчесність</title>
+  <style>
+    body { font-family: Arial, sans-serif; background:#eef2f5; margin:0; padding:30px; }
+    .box { max-width:1100px; margin:auto; background:white; padding:25px; border-radius:14px; }
+    h1 { margin-top:0; color:#1F5673; }
+    input, textarea, select { width:100%; padding:10px; margin:6px 0 14px; border:1px solid #ccc; border-radius:8px; }
+    button { padding:10px 15px; border:0; border-radius:8px; cursor:pointer; background:#1F5673; color:white; }
+    button.del { background:#9E2F3C; }
+    button.edit { background:#A9690A; }
+    table { width:100%; border-collapse:collapse; margin-top:25px; }
+    th, td { padding:10px; border-bottom:1px solid #ddd; text-align:left; vertical-align:top; }
+    th { background:#f1f5f7; }
+    .row { display:grid; grid-template-columns:1fr 1fr; gap:15px; }
+  </style>
+</head>
+<body>
+<div class="box">
+  <h1>Адмін-панель “Доброчесність”</h1>
+
+  <input type="hidden" id="eventId">
+
+  <div class="row">
+    <div>
+      <label>Назва події</label>
+      <input id="title" placeholder="Наприклад: Подання щорічної декларації">
+    </div>
+    <div>
+      <label>Дата</label>
+      <input id="date" type="date">
+    </div>
+  </div>
+
+  <label>Категорія</label>
+  <select id="cat">
+    <option value="declaration">Декларування</option>
+    <option value="conflict">Конфлікт інтересів</option>
+    <option value="gifts">Подарунки</option>
+    <option value="notice">Повідомлення</option>
+    <option value="training">Навчання</option>
+    <option value="restriction">Обмеження</option>
+  </select>
+
+  <label>Опис</label>
+  <textarea id="description" rows="3"></textarea>
+
+  <label>Інструкція для користувача</label>
+  <textarea id="instruction" rows="3"></textarea>
+
+  <label>Нагадування, днів до події</label>
+  <input id="reminders" value="30,10,3,0">
+
+  <button onclick="saveEvent()">Зберегти подію</button>
+  <button onclick="clearForm()" style="background:#5A6577">Очистити</button>
+
+  <table>
+    <thead>
+      <tr>
+        <th>ID</th>
+        <th>Дата</th>
+        <th>Назва</th>
+        <th>Категорія</th>
+        <th>Дії</th>
+      </tr>
+    </thead>
+    <tbody id="events"></tbody>
+  </table>
+</div>
+
+<script>
+const API = "";
+
+async function loadEvents() {
+  const res = await fetch(API + "/events");
+  const data = await res.json();
+
+  const tbody = document.getElementById("events");
+  tbody.innerHTML = "";
+
+  data.forEach(ev => {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td>${ev.id}</td>
+      <td>${ev.date}</td>
+      <td><b>${ev.title}</b><br><small>${ev.description || ""}</small></td>
+      <td>${ev.cat}</td>
+      <td>
+        <button class="edit" onclick='editEvent(${JSON.stringify(ev)})'>Редагувати</button>
+        <button class="del" onclick="deleteEvent(${ev.id})">Видалити</button>
+      </td>
+    `;
+    tbody.appendChild(tr);
+  });
+}
+
+function editEvent(ev) {
+  document.getElementById("eventId").value = ev.id;
+  document.getElementById("title").value = ev.title || "";
+  document.getElementById("date").value = ev.date || "";
+  document.getElementById("cat").value = ev.cat || "declaration";
+  document.getElementById("description").value = ev.description || "";
+  document.getElementById("instruction").value = ev.instruction || "";
+  document.getElementById("reminders").value = (ev.reminders || [30,10,3,0]).join(",");
+  window.scrollTo({ top: 0, behavior: "smooth" });
+}
+
+function clearForm() {
+  document.getElementById("eventId").value = "";
+  document.getElementById("title").value = "";
+  document.getElementById("date").value = "";
+  document.getElementById("cat").value = "declaration";
+  document.getElementById("description").value = "";
+  document.getElementById("instruction").value = "";
+  document.getElementById("reminders").value = "30,10,3,0";
+}
+
+async function saveEvent() {
+  const id = document.getElementById("eventId").value;
+
+  const payload = {
+    title: document.getElementById("title").value,
+    date: document.getElementById("date").value,
+    cat: document.getElementById("cat").value,
+    description: document.getElementById("description").value,
+    instruction: document.getElementById("instruction").value,
+    reminders: document.getElementById("reminders").value
+      .split(",")
+      .map(x => Number(x.trim()))
+      .filter(x => !isNaN(x))
+  };
+
+  const url = id ? `/events/${id}` : "/events";
+  const method = id ? "PUT" : "POST";
+
+  const res = await fetch(url, {
+    method,
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload)
+  });
+
+  if (!res.ok) {
+    alert("Помилка збереження: " + res.status);
+    return;
+  }
+
+  clearForm();
+  loadEvents();
+}
+
+async function deleteEvent(id) {
+  if (!confirm("Видалити цю подію?")) return;
+
+  const res = await fetch(`/events/${id}`, { method: "DELETE" });
+
+  if (!res.ok) {
+    alert("Помилка видалення: " + res.status);
+    return;
+  }
+
+  loadEvents();
+}
+
+loadEvents();
+</script>
+</body>
+</html>
+"""
