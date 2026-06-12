@@ -165,7 +165,14 @@ class ReferenceOut(ReferenceIn):
         from_attributes = True
 
 app = FastAPI(title="Доброчесність API", version="0.3.0", docs_url=None, redoc_url=None, openapi_url=None)
-app.add_middleware(CORSMiddleware, allow_origins=["capacitor://localhost", "http://localhost", "https://app-dobrochesnist.onrender.com"], allow_methods=["*"], allow_headers=["*"])
+app.add_middleware(
+    CORSMiddleware,
+    # Для мобільного додатку на Capacitor/Android.
+    # CORS НЕ є захистом від зміни БД. Зміни захищає admin_guard нижче.
+    allow_origins=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
+    allow_headers=["*"],
+)
 
 @app.middleware("http")
 async def admin_guard(request: Request, call_next):
