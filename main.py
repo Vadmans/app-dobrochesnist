@@ -20,6 +20,40 @@ from sqlalchemy.orm import (
     DeclarativeBase, Mapped, mapped_column, Session, sessionmaker,
 )
 
+import base64, secrets
+from fastapi import Response
+
+ADMIN_USER = os.getenv("ADMIN_USER", "admin")
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "")
+
+def _is_admin(request) -> bool:
+    if not ADMIN_PASSWORD:            # поки пароль не заданий — пускати нікого
+        return False
+    h = request.headers.get("Authorization", "")
+    if not h.startswith("Basic "):
+        return False
+    try:
+        user, _, pwd = base64.b64decode(h[6:]).decode("utf-8").partition(":")
+    except Exception:
+        return False
+    return (secrets.compare_digest(user, ADMIN_USER)
+            and secrets.compare_digest(pwd, ADMIN_PASSWORD))
+
+@app.middleware("http")
+async def admin_guard(request, call_next):
+    path, method = request.url.path, request.method
+    protected = (
+        path.startswith("/admin")
+        or path.startswith("/stats")
+        or (path.startswith("/events")
+            and method in {"POST", "PUT", "DELETE", "PATCH"}
+            and not path.endswith("/view"))
+    )
+    if protected and not _is_admin(request):
+        return Response(status_code=401, content="Потрібна авторизація",
+                        headers={"WWW-Authenticate": 'Basic realm="Admin"'})
+    return await call_next(request)
+
 # ── База даних ────────────────────────────────────────────────────────────
 # SQLite для розробки. Для PostgreSQL замініть на:
 # "postgresql+psycopg://user:pass@localhost:5432/dobrochesnist"
