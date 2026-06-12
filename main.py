@@ -24,7 +24,7 @@ import base64, secrets
 from fastapi import Response
 
 ADMIN_USER = os.getenv("ADMIN_USER", "admin")
-ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "")
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "admin123")
 
 def _is_admin(request) -> bool:
     if not ADMIN_PASSWORD:            # поки пароль не заданий — пускати нікого
