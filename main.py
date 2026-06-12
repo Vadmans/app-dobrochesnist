@@ -4,9 +4,14 @@
 Render:
 - Start Command: uvicorn main:app --host 0.0.0.0 --port $PORT
 - Environment Variables:
-  DATABASE_URL=postgresql://...
+  DATABASE_URL=postgresql://...        (рядок підключення від Neon)
   ADMIN_USER=admin
-  ADMIN_PASSWORD=admin123
+  ADMIN_PASSWORD=<надійний_пароль>     (НЕ admin123 — задайте складний пароль)
+
+Доступ:
+- /events (GET)  — відкритий, його читає мобільний додаток.
+- /admin, /stats, зміна подій (POST/PUT/DELETE) — лише з логіном/паролем.
+- /docs, /redoc, /openapi.json — ВИМКНЕНО (закрито від публіки).
 """
 
 import base64
@@ -81,8 +86,15 @@ class EventOut(EventIn):
         from_attributes = True
 
 
-# ── Застосунок ────────────────────────────────────────────────────────────
-app = FastAPI(title="Доброчесність API", version="0.1.0")
+# ── Застосунок ──────────────────────────────────────────────────────────
+# docs_url/redoc_url/openapi_url = None — публічний Swagger вимкнено.
+app = FastAPI(
+    title="Доброчесність API",
+    version="0.1.0",
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
+)
 
 app.add_middleware(
     CORSMiddleware,
@@ -94,7 +106,7 @@ app.add_middleware(
 
 # ── Захист адмінки ────────────────────────────────────────────────────────
 ADMIN_USER = os.getenv("ADMIN_USER", "admin")
-ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "")
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "admin123")
 
 
 def _is_admin(request: Request) -> bool:
@@ -292,7 +304,6 @@ def root():
   <div class="box">
     <h1>Доброчесність API працює</h1>
     <p>Сервіс успішно запущений.</p>
-    <a href="/docs">Swagger /docs</a>
     <a href="/admin">Адмін-панель</a>
     <a href="/events">Події JSON</a>
   </div>
@@ -349,7 +360,6 @@ def admin_panel():
       <div class="muted">Керування подіями для мобільного додатку</div>
     </div>
     <div class="links">
-      <a href="/docs" target="_blank">/docs</a>
       <a href="/events" target="_blank">/events</a>
       <a href="/stats" target="_blank">/stats</a>
     </div>
