@@ -146,7 +146,7 @@ app.add_middleware(
 
 # ── Захист адмінки ────────────────────────────────────────────────────────
 ADMIN_USER = os.getenv("ADMIN_USER", "admin")
-ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "")
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "admin1234")
 
 
 def _is_admin(request: Request) -> bool:
