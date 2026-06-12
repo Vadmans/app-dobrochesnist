@@ -1,62 +1,29 @@
 """
-Доброчесність — бекенд (API + база даних).
+Доброчесність — бекенд (API + база даних + захищена адмін-панель).
 
-Один сервіс, який обслуговує і застосунок користувача, і адмін-панель.
-За замовчуванням використовує SQLite (нічого не треба встановлювати окремо).
-Для продакшену перемикається на PostgreSQL зміною одного рядка DATABASE_URL.
+Render:
+- Start Command: uvicorn main:app --host 0.0.0.0 --port $PORT
+- Environment Variables:
+  DATABASE_URL=postgresql://...
+  ADMIN_USER=admin
+  ADMIN_PASSWORD=admin123
 """
 
+import base64
 import os
+import secrets
 import uuid
 from datetime import date, timedelta
 from typing import List
 
-from fastapi import FastAPI, HTTPException, Depends
-from fastapi.responses import HTMLResponse
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse, Response
 from pydantic import BaseModel
-from sqlalchemy import create_engine, String, Integer, Date, JSON, Text
-from sqlalchemy.orm import (
-    DeclarativeBase, Mapped, mapped_column, Session, sessionmaker,
-)
-
-import base64, secrets
-from fastapi import Response
-
-ADMIN_USER = os.getenv("ADMIN_USER", "admin")
-ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "admin123")
-
-def _is_admin(request) -> bool:
-    if not ADMIN_PASSWORD:            # поки пароль не заданий — пускати нікого
-        return False
-    h = request.headers.get("Authorization", "")
-    if not h.startswith("Basic "):
-        return False
-    try:
-        user, _, pwd = base64.b64decode(h[6:]).decode("utf-8").partition(":")
-    except Exception:
-        return False
-    return (secrets.compare_digest(user, ADMIN_USER)
-            and secrets.compare_digest(pwd, ADMIN_PASSWORD))
-
-@app.middleware("http")
-async def admin_guard(request, call_next):
-    path, method = request.url.path, request.method
-    protected = (
-        path.startswith("/admin")
-        or path.startswith("/stats")
-        or (path.startswith("/events")
-            and method in {"POST", "PUT", "DELETE", "PATCH"}
-            and not path.endswith("/view"))
-    )
-    if protected and not _is_admin(request):
-        return Response(status_code=401, content="Потрібна авторизація",
-                        headers={"WWW-Authenticate": 'Basic realm="Admin"'})
-    return await call_next(request)
+from sqlalchemy import Date, Integer, JSON, String, Text, create_engine
+from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
 # ── База даних ────────────────────────────────────────────────────────────
-# SQLite для розробки. Для PostgreSQL замініть на:
-# "postgresql+psycopg://user:pass@localhost:5432/dobrochesnist"
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./dobrochesnist.db")
 
 connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
@@ -72,14 +39,14 @@ class Event(Base):
     __tablename__ = "events"
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
-    cat: Mapped[str] = mapped_column(String, index=True)            # категорія
-    title: Mapped[str] = mapped_column(String)                     # назва
-    date: Mapped[date] = mapped_column(Date, index=True)           # строк
-    recur: Mapped[str] = mapped_column(String, default="")         # повторюваність
+    cat: Mapped[str] = mapped_column(String, index=True)
+    title: Mapped[str] = mapped_column(String)
+    date: Mapped[date] = mapped_column(Date, index=True)
+    recur: Mapped[str] = mapped_column(String, default="")
     description: Mapped[str] = mapped_column(Text, default="")
-    instruction: Mapped[str] = mapped_column(Text, default="")     # «що зробити»
+    instruction: Mapped[str] = mapped_column(Text, default="")
     audience: Mapped[str] = mapped_column(String, default="Усі працівники")
-    reminders: Mapped[list] = mapped_column(JSON, default=list)    # [30,10,3,0]
+    reminders: Mapped[list] = mapped_column(JSON, default=list)
     views: Mapped[int] = mapped_column(Integer, default=0)
 
 
@@ -94,7 +61,7 @@ def get_db():
         db.close()
 
 
-# ── Схеми запитів/відповідей ──────────────────────────────────────────────
+# ── Схеми ────────────────────────────────────────────────────────────────
 class EventIn(BaseModel):
     cat: str
     title: str
@@ -117,8 +84,6 @@ class EventOut(EventIn):
 # ── Застосунок ────────────────────────────────────────────────────────────
 app = FastAPI(title="Доброчесність API", version="0.1.0")
 
-# Дозволяємо звертатися з застосунку користувача та адмін-панелі.
-# Для продакшену звузьте allow_origins до реальних адрес ваших клієнтів.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -127,10 +92,52 @@ app.add_middleware(
 )
 
 
-# ── Публічні ендпоінти (застосунок користувача) ───────────────────────────
+# ── Захист адмінки ────────────────────────────────────────────────────────
+ADMIN_USER = os.getenv("ADMIN_USER", "admin")
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "")
+
+
+def _is_admin(request: Request) -> bool:
+    if not ADMIN_PASSWORD:
+        return False
+
+    header = request.headers.get("Authorization", "")
+    if not header.startswith("Basic "):
+        return False
+
+    try:
+        raw = base64.b64decode(header[6:]).decode("utf-8")
+        username, _, password = raw.partition(":")
+    except Exception:
+        return False
+
+    return secrets.compare_digest(username, ADMIN_USER) and secrets.compare_digest(password, ADMIN_PASSWORD)
+
+
+@app.middleware("http")
+async def admin_guard(request: Request, call_next):
+    path = request.url.path
+    method = request.method.upper()
+
+    protected = (
+        path.startswith("/admin")
+        or path.startswith("/stats")
+        or (path.startswith("/events") and method in {"POST", "PUT", "DELETE", "PATCH"} and not path.endswith("/view"))
+    )
+
+    if protected and not _is_admin(request):
+        return Response(
+            status_code=401,
+            content="Потрібна авторизація адміністратора",
+            headers={"WWW-Authenticate": 'Basic realm="Dobrochesnist Admin"'},
+        )
+
+    return await call_next(request)
+
+
+# ── Публічні ендпоінти ───────────────────────────────────────────────────
 @app.get("/events", response_model=List[EventOut])
 def list_events(db: Session = Depends(get_db)):
-    """Усі події, відсортовані за строком."""
     return db.query(Event).order_by(Event.date).all()
 
 
@@ -144,7 +151,6 @@ def get_event(event_id: str, db: Session = Depends(get_db)):
 
 @app.post("/events/{event_id}/view", response_model=EventOut)
 def register_view(event_id: str, db: Session = Depends(get_db)):
-    """Лічильник переглядів для статистики адмінки."""
     ev = db.get(Event, event_id)
     if not ev:
         raise HTTPException(404, "Подію не знайдено")
@@ -154,9 +160,7 @@ def register_view(event_id: str, db: Session = Depends(get_db)):
     return ev
 
 
-# ── Адмінські ендпоінти (адмін-панель) ────────────────────────────────────
-# TODO (етап 2): захистити автентифікацією — наприклад, залежністю,
-# яка перевіряє токен адміністратора, перш ніж пускати до цих маршрутів.
+# ── Адмінські API ────────────────────────────────────────────────────────
 @app.post("/events", response_model=EventOut, status_code=201)
 def create_event(data: EventIn, db: Session = Depends(get_db)):
     ev = Event(id=f"e{uuid.uuid4().hex[:8]}", views=0, **data.model_dump())
@@ -171,8 +175,8 @@ def update_event(event_id: str, data: EventIn, db: Session = Depends(get_db)):
     ev = db.get(Event, event_id)
     if not ev:
         raise HTTPException(404, "Подію не знайдено")
-    for k, v in data.model_dump().items():
-        setattr(ev, k, v)
+    for key, value in data.model_dump().items():
+        setattr(ev, key, value)
     db.commit()
     db.refresh(ev)
     return ev
@@ -201,7 +205,7 @@ def stats(db: Session = Depends(get_db)):
     }
 
 
-# ── Демо-наповнення (лише якщо база порожня) ──────────────────────────────
+# ── Демо-наповнення ──────────────────────────────────────────────────────
 def seed():
     db = SessionLocal()
     try:
@@ -209,26 +213,54 @@ def seed():
             return
         today = date.today()
         demo = [
-            Event(id="e1", cat="declaration", title="Подання щорічної декларації",
-                  date=today + timedelta(days=12), recur="Щороку, до 1 квітня",
-                  description="Подати щорічну декларацію через Реєстр декларацій.",
-                  instruction="Перевірте: доходи, нерухомість, транспорт, корпоративні права, рахунки.",
-                  audience="Усі працівники", reminders=[30, 10, 3, 0], views=184),
-            Event(id="e2", cat="training", title="Щорічне навчання з доброчесності",
-                  date=today + timedelta(days=3), recur="Щороку",
-                  description="Пройти онлайн-курс із запобігання конфлікту інтересів.",
-                  instruction="Курс триває ~40 хв. Сертифікат завантажується у профіль.",
-                  audience="Усі працівники", reminders=[10, 3, 0], views=97),
-            Event(id="e3", cat="notice", title="Повідомлення про суттєві зміни майнового стану",
-                  date=today + timedelta(days=28), recur="За потреби, протягом 10 днів",
-                  description="Подати повідомлення про суттєву зміну майнового стану.",
-                  instruction="Скористайтесь помічником, щоб перевірити, чи зміна суттєва.",
-                  audience="За індивідуальною ситуацією", reminders=[3, 0], views=41),
-            Event(id="e4", cat="gifts", title="Декларування отриманих подарунків",
-                  date=today + timedelta(days=46), recur="За потреби",
-                  description="Зафіксувати подарунки, отримані у зв'язку зі службою.",
-                  instruction="Подарунки понад межу передаються органу. Зберігайте документи.",
-                  audience="Усі працівники", reminders=[0], views=23),
+            Event(
+                id="e1",
+                cat="declaration",
+                title="Подання щорічної декларації",
+                date=today + timedelta(days=12),
+                recur="Щороку, до 1 квітня",
+                description="Подати щорічну декларацію через Реєстр декларацій.",
+                instruction="Перевірте: доходи, нерухомість, транспорт, корпоративні права, рахунки.",
+                audience="Усі працівники",
+                reminders=[30, 10, 3, 0],
+                views=184,
+            ),
+            Event(
+                id="e2",
+                cat="training",
+                title="Щорічне навчання з доброчесності",
+                date=today + timedelta(days=3),
+                recur="Щороку",
+                description="Пройти онлайн-курс із запобігання конфлікту інтересів.",
+                instruction="Курс триває ~40 хв. Сертифікат завантажується у профіль.",
+                audience="Усі працівники",
+                reminders=[10, 3, 0],
+                views=97,
+            ),
+            Event(
+                id="e3",
+                cat="notice",
+                title="Повідомлення про суттєві зміни майнового стану",
+                date=today + timedelta(days=28),
+                recur="За потреби, протягом 10 днів",
+                description="Подати повідомлення про суттєву зміну майнового стану.",
+                instruction="Скористайтесь помічником, щоб перевірити, чи зміна суттєва.",
+                audience="За індивідуальною ситуацією",
+                reminders=[3, 0],
+                views=41,
+            ),
+            Event(
+                id="e4",
+                cat="gifts",
+                title="Декларування отриманих подарунків",
+                date=today + timedelta(days=46),
+                recur="За потреби",
+                description="Зафіксувати подарунки, отримані у зв'язку зі службою.",
+                instruction="Подарунки понад межу передаються органу. Зберігайте документи.",
+                audience="Усі працівники",
+                reminders=[0],
+                views=23,
+            ),
         ]
         db.add_all(demo)
         db.commit()
@@ -236,13 +268,10 @@ def seed():
         db.close()
 
 
-# Наповнюємо базу при запуску. Викликаємо напряму, а не через app.on_event,
-# бо в нових версіях Starlette подію "startup" прибрано. Функція ідемпотентна:
-# якщо події вже є — нічого не робить.
 seed()
 
 
-
+# ── Сторінки ─────────────────────────────────────────────────────────────
 @app.get("/", response_class=HTMLResponse)
 def root():
     return """
@@ -262,7 +291,7 @@ def root():
 <body>
   <div class="box">
     <h1>Доброчесність API працює</h1>
-    <p>Сервіс успішно запущений. Мобільний додаток може отримувати події через API.</p>
+    <p>Сервіс успішно запущений.</p>
     <a href="/docs">Swagger /docs</a>
     <a href="/admin">Адмін-панель</a>
     <a href="/events">Події JSON</a>
@@ -282,17 +311,7 @@ def admin_panel():
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Адмін-панель | Доброчесність</title>
   <style>
-    :root {
-      --bg:#EBEEF0;
-      --surface:#FFFFFF;
-      --ink:#1B2430;
-      --soft:#5A6577;
-      --line:#DCE1E6;
-      --accent:#1F5673;
-      --red:#9E2F3C;
-      --amber:#A9690A;
-      --green:#2C6A4E;
-    }
+    :root { --bg:#EBEEF0; --surface:#FFFFFF; --ink:#1B2430; --soft:#5A6577; --line:#DCE1E6; --accent:#1F5673; --red:#9E2F3C; --amber:#A9690A; --green:#2C6A4E; }
     * { box-sizing:border-box; }
     body { font-family: Arial, sans-serif; background:var(--bg); margin:0; padding:24px; color:var(--ink); }
     .box { max-width:1200px; margin:auto; background:var(--surface); padding:24px; border-radius:16px; box-shadow:0 10px 30px rgba(0,0,0,.06); }
@@ -300,15 +319,9 @@ def admin_panel():
     h1 { margin:0; color:var(--accent); font-size:26px; }
     .links a { color:var(--accent); margin-left:12px; text-decoration:none; font-weight:600; }
     label { display:block; margin-bottom:5px; color:var(--soft); font-size:13px; font-weight:700; }
-    input, textarea, select {
-      width:100%; padding:10px 12px; margin:0 0 14px;
-      border:1px solid #cfd6dd; border-radius:10px; font-size:14px;
-    }
+    input, textarea, select { width:100%; padding:10px 12px; margin:0 0 14px; border:1px solid #cfd6dd; border-radius:10px; font-size:14px; }
     textarea { resize:vertical; }
-    button {
-      padding:10px 14px; border:0; border-radius:10px; cursor:pointer;
-      background:var(--accent); color:white; font-weight:700;
-    }
+    button { padding:10px 14px; border:0; border-radius:10px; cursor:pointer; background:var(--accent); color:white; font-weight:700; }
     button:hover { opacity:.92; }
     button.del { background:var(--red); }
     button.edit { background:var(--amber); }
@@ -325,15 +338,7 @@ def admin_panel():
     .muted { color:var(--soft); font-size:12px; }
     .pill { display:inline-block; padding:4px 8px; border-radius:999px; background:#E6EEF2; color:var(--accent); font-size:12px; font-weight:700; }
     .table-actions { display:flex; gap:6px; flex-wrap:wrap; }
-    @media (max-width:800px) {
-      body { padding:10px; }
-      .box { padding:16px; }
-      .row { grid-template-columns:1fr; gap:0; }
-      table, thead, tbody, th, td, tr { display:block; }
-      thead { display:none; }
-      tr { border:1px solid var(--line); border-radius:12px; margin-bottom:10px; padding:8px; }
-      td { border-bottom:0; padding:6px; }
-    }
+    @media (max-width:800px) { body { padding:10px; } .box { padding:16px; } .row { grid-template-columns:1fr; gap:0; } table, thead, tbody, th, td, tr { display:block; } thead { display:none; } tr { border:1px solid var(--line); border-radius:12px; margin-bottom:10px; padding:8px; } td { border-bottom:0; padding:6px; } }
   </style>
 </head>
 <body>
@@ -351,7 +356,6 @@ def admin_panel():
   </div>
 
   <div id="status" class="status"></div>
-
   <input type="hidden" id="eventId">
 
   <div class="row">
@@ -399,14 +403,7 @@ def admin_panel():
 
   <table>
     <thead>
-      <tr>
-        <th>ID</th>
-        <th>Дата</th>
-        <th>Назва</th>
-        <th>Категорія</th>
-        <th>Перегляди</th>
-        <th>Дії</th>
-      </tr>
+      <tr><th>ID</th><th>Дата</th><th>Назва</th><th>Категорія</th><th>Перегляди</th><th>Дії</th></tr>
     </thead>
     <tbody id="events"></tbody>
   </table>
@@ -417,8 +414,17 @@ function showStatus(text, ok=true) {
   const el = document.getElementById("status");
   el.className = "status " + (ok ? "ok" : "err");
   el.textContent = text;
-  setTimeout(() => { el.style.display = "none"; }, 4000);
   el.style.display = "block";
+  setTimeout(() => { el.style.display = "none"; }, 4000);
+}
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
 }
 
 async function loadEvents() {
@@ -426,35 +432,23 @@ async function loadEvents() {
     const res = await fetch("/events");
     if (!res.ok) throw new Error("HTTP " + res.status);
     const data = await res.json();
-
     const tbody = document.getElementById("events");
     tbody.innerHTML = "";
-
     if (!data.length) {
       tbody.innerHTML = `<tr><td colspan="6">Подій поки немає</td></tr>`;
       return;
     }
-
     data.forEach(ev => {
       const tr = document.createElement("tr");
-      const safe = JSON.stringify(ev).replaceAll("'", "&#39;");
       tr.innerHTML = `
-        <td><span class="muted">${ev.id}</span></td>
-        <td>${ev.date || ""}</td>
-        <td>
-          <b>${ev.title || ""}</b>
-          <div class="muted">${ev.description || ""}</div>
-          <div class="muted">${ev.instruction || ""}</div>
-        </td>
-        <td><span class="pill">${ev.cat || ""}</span></td>
-        <td>${ev.views ?? 0}</td>
-        <td>
-          <div class="table-actions">
-            <button class="edit" onclick='editEvent(${safe})'>Редагувати</button>
-            <button class="del" onclick="deleteEvent('${ev.id}')">Видалити</button>
-          </div>
-        </td>
-      `;
+        <td><span class="muted">${escapeHtml(ev.id)}</span></td>
+        <td>${escapeHtml(ev.date)}</td>
+        <td><b>${escapeHtml(ev.title)}</b><div class="muted">${escapeHtml(ev.description)}</div><div class="muted">${escapeHtml(ev.instruction)}</div></td>
+        <td><span class="pill">${escapeHtml(ev.cat)}</span></td>
+        <td>${escapeHtml(ev.views ?? 0)}</td>
+        <td><div class="table-actions"><button class="edit">Редагувати</button><button class="del">Видалити</button></div></td>`;
+      tr.querySelector(".edit").addEventListener("click", () => editEvent(ev));
+      tr.querySelector(".del").addEventListener("click", () => deleteEvent(ev.id));
       tbody.appendChild(tr);
     });
   } catch (e) {
@@ -489,7 +483,6 @@ function clearForm() {
 
 async function saveEvent() {
   const id = document.getElementById("eventId").value.trim();
-
   const payload = {
     title: document.getElementById("title").value.trim(),
     date: document.getElementById("date").value,
@@ -498,10 +491,7 @@ async function saveEvent() {
     description: document.getElementById("description").value.trim(),
     instruction: document.getElementById("instruction").value.trim(),
     audience: document.getElementById("audience").value.trim() || "Усі працівники",
-    reminders: document.getElementById("reminders").value
-      .split(",")
-      .map(x => Number(x.trim()))
-      .filter(x => !isNaN(x))
+    reminders: document.getElementById("reminders").value.split(",").map(x => Number(x.trim())).filter(x => !isNaN(x))
   };
 
   if (!payload.title || !payload.date || !payload.cat) {
@@ -513,17 +503,8 @@ async function saveEvent() {
   const method = id ? "PUT" : "POST";
 
   try {
-    const res = await fetch(url, {
-      method,
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload)
-    });
-
-    if (!res.ok) {
-      const txt = await res.text();
-      throw new Error("HTTP " + res.status + " " + txt);
-    }
-
+    const res = await fetch(url, { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+    if (!res.ok) throw new Error("HTTP " + res.status + " " + await res.text());
     clearForm();
     await loadEvents();
     showStatus(id ? "Подію оновлено" : "Подію створено");
@@ -534,15 +515,9 @@ async function saveEvent() {
 
 async function deleteEvent(id) {
   if (!confirm("Видалити цю подію?")) return;
-
   try {
     const res = await fetch(`/events/${id}`, { method: "DELETE" });
-
-    if (!res.ok && res.status !== 204) {
-      const txt = await res.text();
-      throw new Error("HTTP " + res.status + " " + txt);
-    }
-
+    if (!res.ok && res.status !== 204) throw new Error("HTTP " + res.status + " " + await res.text());
     await loadEvents();
     showStatus("Подію видалено");
   } catch (e) {
@@ -558,7 +533,6 @@ loadEvents();
 
 
 # ── Запуск ────────────────────────────────────────────────────────────────
-# Дозволяє стартувати і командою `python main.py`, і `uvicorn main:app`.
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
