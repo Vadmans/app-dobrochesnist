@@ -689,7 +689,12 @@ button{padding:10px 16px;border:0;border-radius:10px;cursor:pointer;font-weight:
 .btn-main:hover,.btn-green:hover,.btn-red:hover,.btn-edit:hover{filter:brightness(1.06);transform:translateY(-1px)}
 .btn-light:hover{background:var(--accent-soft);border-color:var(--accent)}
 .actions{display:flex;gap:7px;flex-wrap:wrap}
-.actions button{padding:7px 11px;font-size:13px}
+.actions button{padding:7px 11px;font-size:13px;white-space:nowrap}
+td .actions{flex-wrap:nowrap}
+td:last-child{white-space:nowrap;width:1%}
+.toolbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:16px}
+.toolbar label{margin:0;font-weight:600;color:var(--muted)}
+.toolbar select{width:auto;min-width:200px}
 
 /* ---------- Tables ---------- */
 .table-wrap{width:100%;overflow:auto;border-radius:12px;border:1px solid var(--line)}
@@ -788,7 +793,7 @@ td b{font-weight:700;color:var(--text)}
 </section>
 
 <section id="tab-chat" class="section">
-<div class="card"><h3><span class="ic">💬</span> Питання користувачів</h3><div class="table-wrap"><table><thead><tr><th>Дата</th><th>Питання</th><th>Відповідь</th><th>Статус</th><th>Дії</th></tr></thead><tbody id="chatMessages"></tbody></table></div></div>
+<div class="card"><h3><span class="ic">💬</span> Питання користувачів</h3><div class="toolbar"><label>Сортування:</label><select id="chatSort" onchange="loadChat()"><option value="new">Спочатку нові</option><option value="old">Спочатку старі</option><option value="wait">Спершу без відповіді</option><option value="answered">Спершу з відповіддю</option></select></div><div class="table-wrap"><table><thead><tr><th>Дата</th><th>Питання</th><th>Відповідь</th><th>Статус</th><th>Дії</th></tr></thead><tbody id="chatMessages"></tbody></table></div></div>
 </section>
 </main>
 </div>
@@ -844,10 +849,10 @@ async function sendPush(){const title=document.getElementById('pushTitle').value
 async function loadDevices(){try{const r=await req('/devices');const d=await r.json();const tb=document.getElementById('devices');tb.innerHTML='';if(!d.length){tb.innerHTML='<tr><td colspan="4" class="empty">Пристроїв поки немає.</td></tr>';return;}d.forEach(x=>{tb.innerHTML+=`<tr><td><span class="mono">${escapeHtml(x.token)}</span></td><td>${escapeHtml(x.platform)}</td><td>${escapeHtml(x.app_version)||'—'}</td><td><button class="btn-red" onclick="deleteDevice('${jsArg(x.token)}')">Видалити</button></td></tr>`});}catch(e){showStatus('Не вдалося завантажити пристрої',false);}}
 async function deleteDevice(token){if(!confirm('Видалити пристрій?'))return;await req(`/devices/${encodeURIComponent(token)}`,{method:'DELETE'});await loadDevices();showStatus('Пристрій видалено');}
 
-async function loadChat(){try{const r=await req('/chat/admin');const d=await r.json();const tb=document.getElementById('chatMessages');tb.innerHTML='';if(!d.length){tb.innerHTML='<tr><td colspan="5" class="empty">Запитань поки немає.</td></tr>';return;}d.forEach(x=>{const answered=!!x.answer;const dateStr=x.created_at?new Date(x.created_at).toLocaleString('uk-UA'):'';tb.innerHTML+=`<tr><td>${escapeHtml(dateStr)}</td><td><b>${escapeHtml(x.question)}</b><br><span class="muted">${escapeHtml(x.client_id)}</span></td><td>${answered?escapeHtml(x.answer):'<textarea id="a_'+x.id+'" rows="2" placeholder="Введіть відповідь"></textarea>'}</td><td>${answered?'<span class="pill pill-ok">Відповідь надано</span>':'<span class="pill pill-wait">Очікує</span>'}</td><td><div class="actions">${answered?'<button class="btn-edit" onclick="editAnswer(\''+x.id+'\',\''+jsArg(x.answer)+'\')">Редагувати</button>':''}<button class="btn-green" onclick="answerChat(\''+x.id+'\',document.getElementById(\'a_'+x.id+'\')?.value)">Відповісти</button><button class="btn-red" onclick="deleteMessage(\''+x.id+'\')">Видалити</button></div></td></tr>`});}catch(e){showStatus('Не вдалося завантажити чат',false);}}
+async function loadChat(){try{const r=await req('/chat/admin');const d=await r.json();const tb=document.getElementById('chatMessages');tb.innerHTML='';if(!d.length){tb.innerHTML='<tr><td colspan="5" class="empty">Запитань поки немає.</td></tr>';return;}const sort=(document.getElementById('chatSort')||{}).value||'new';const ts=x=>x.created_at?new Date(x.created_at).getTime():0;const isAns=x=>(x.answer&&x.answer.trim())?1:0;d.sort((a,b)=>{if(sort==='old')return ts(a)-ts(b);if(sort==='wait')return (isAns(a)-isAns(b))||(ts(b)-ts(a));if(sort==='answered')return (isAns(b)-isAns(a))||(ts(b)-ts(a));return ts(b)-ts(a);});d.forEach(x=>{const answered=!!(x.answer&&x.answer.trim());const dateStr=x.created_at?new Date(x.created_at).toLocaleString('uk-UA'):'';tb.innerHTML+=`<tr><td>${escapeHtml(dateStr)}</td><td><b>${escapeHtml(x.question)}</b><br><span class="muted">${escapeHtml(x.client_id)}</span></td><td>${answered?escapeHtml(x.answer):'<textarea id="a_'+x.id+'" rows="2" placeholder="Введіть відповідь"></textarea>'}</td><td>${answered?'<span class="pill pill-ok">Відповідь надано</span>':'<span class="pill pill-wait">Очікує</span>'}</td><td><div class="actions">${answered?'<button class="btn-edit" onclick="editAnswer(\''+x.id+'\',\''+jsArg(x.answer)+'\')">Редагувати</button>':''}<button class="btn-green" onclick="answerChat(\''+x.id+'\',document.getElementById(\'a_'+x.id+'\')?.value)">Відповісти</button><button class="btn-red" onclick="deleteMessage(\''+x.id+'\')">Видалити</button></div></td></tr>`});}catch(e){showStatus('Не вдалося завантажити чат',false);}}
 async function editAnswer(id,current){const newA=prompt('Редагувати відповідь:',current);if(newA)await answerChat(id,newA);}
 async function answerChat(id,answer){if(!answer||!answer.trim()){showStatus('Введіть відповідь',false);return;}try{const r=await req(`/chat/${id}/answer`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({answer:answer.trim()})});if(!r.ok)throw new Error();await loadChat();showStatus('Відповідь збережено');}catch(e){showStatus('Помилка',false);}}
-async function deleteMessage(id){if(!confirm('Видалити повідомлення?'))return;await req(`/chat/${id}`,{method:'DELETE'});await loadChat();showStatus('Повідомлення видалено');}
+async function deleteMessage(id){if(!confirm('Видалити повідомлення?'))return;try{const r=await req(`/chat/${encodeURIComponent(id)}`,{method:'DELETE'});if(!r.ok)throw new Error('HTTP '+r.status);await loadChat();showStatus('Повідомлення видалено');}catch(e){showStatus('Не вдалося видалити повідомлення',false);}}
 
 loadEvents();
 </script>
