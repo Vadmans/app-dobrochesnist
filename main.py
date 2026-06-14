@@ -12,19 +12,24 @@ Render:
 import base64
 import hashlib
 import hmac
+import logging
 import os
 import secrets
+import time
 import uuid
 import json
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timezone
 from typing import List, Optional
 
 from fastapi import Depends, FastAPI, Form, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from pydantic import BaseModel
-from sqlalchemy import Boolean, Date, DateTime, Integer, JSON, String, Text, create_engine
+from sqlalchemy import Boolean, Date, DateTime, Integer, JSON, String, Text, create_engine, inspect as sa_inspect, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("dobrochesnist")
 
 # Firebase
 try:
@@ -74,8 +79,8 @@ class AdminUser(Base):
     password_hash: Mapped[str] = mapped_column(Text)
     salt: Mapped[str] = mapped_column(String)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
-    last_login_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    last_login_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class Device(Base):
@@ -83,9 +88,10 @@ class Device(Base):
     token: Mapped[str] = mapped_column(String, primary_key=True)
     platform: Mapped[str] = mapped_column(String, default="android")
     app_version: Mapped[str] = mapped_column(String, default="")
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
-    last_seen_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    client_id: Mapped[str] = mapped_column(String, default="", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
 class ChatMessage(Base):
@@ -95,11 +101,28 @@ class ChatMessage(Base):
     question: Mapped[str] = mapped_column(Text)
     answer: Mapped[str] = mapped_column(Text, default="")
     status: Mapped[str] = mapped_column(String, default="new", index=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
-    answered_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    answered_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 Base.metadata.create_all(engine)
+
+
+def ensure_schema():
+    """Легка міграція: додає відсутні колонки в наявні таблиці (без Alembic)."""
+    try:
+        insp = sa_inspect(engine)
+        if "devices" in insp.get_table_names():
+            cols = {c["name"] for c in insp.get_columns("devices")}
+            if "client_id" not in cols:
+                with engine.begin() as conn:
+                    conn.execute(text("ALTER TABLE devices ADD COLUMN client_id VARCHAR DEFAULT ''"))
+                logger.info("ensure_schema: додано колонку devices.client_id")
+    except Exception as e:
+        logger.warning("ensure_schema не вдалося: %s", e)
+
+
+ensure_schema()
 
 
 def get_db():
@@ -112,7 +135,64 @@ def get_db():
 
 SESSION_COOKIE = "dobro_admin_session"
 SESSION_TTL_SECONDS = 60 * 60 * 12
-SECRET_KEY = os.getenv("SECRET_KEY") or os.getenv("DATABASE_URL", "local-dev-secret")
+
+IS_PRODUCTION = not DATABASE_URL.startswith("sqlite")
+SECRET_KEY = os.getenv("SECRET_KEY")
+if not SECRET_KEY:
+    if IS_PRODUCTION:
+        raise RuntimeError(
+            "Не задано змінну середовища SECRET_KEY. "
+            "Додайте її у налаштуваннях Render (Environment) — це секретний рядок "
+            "для підпису сесій. Без нього застосунок не запускається з міркувань безпеки."
+        )
+    SECRET_KEY = "local-dev-secret-change-me"
+    logger.warning("SECRET_KEY не задано — використовується тимчасовий ключ для локальної розробки.")
+
+# Захищені cookie на HTTPS (Render). Локально (sqlite) — вимкнено, щоб працювало по http.
+COOKIE_SECURE = os.getenv("COOKIE_SECURE", "1" if IS_PRODUCTION else "0") == "1"
+
+# ---- Захист входу від перебору (у пам'яті процесу) ----
+MAX_LOGIN_ATTEMPTS = 5
+LOGIN_LOCK_SECONDS = 300
+_login_fails: dict = {}
+
+def login_lock_remaining(key: str) -> int:
+    rec = _login_fails.get(key)
+    if not rec:
+        return 0
+    _, lock_until = rec
+    remaining = int(lock_until - time.time())
+    return remaining if remaining > 0 else 0
+
+def login_register_fail(key: str) -> None:
+    count, lock_until = _login_fails.get(key, (0, 0.0))
+    count += 1
+    if count >= MAX_LOGIN_ATTEMPTS:
+        lock_until = time.time() + LOGIN_LOCK_SECONDS
+        count = 0
+    _login_fails[key] = (count, lock_until)
+
+def login_reset(key: str) -> None:
+    _login_fails.pop(key, None)
+
+# ---- Простий rate-limit для публічних ендпоінтів ----
+_rate_calls: dict = {}
+
+def allow_rate(key: str, max_calls: int, window: int) -> bool:
+    now = time.time()
+    arr = [t for t in _rate_calls.get(key, ()) if now - t < window]
+    if len(arr) >= max_calls:
+        _rate_calls[key] = arr
+        return False
+    arr.append(now)
+    _rate_calls[key] = arr
+    return True
+
+def client_ip(request: Request) -> str:
+    fwd = request.headers.get("x-forwarded-for")
+    if fwd:
+        return fwd.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
 
 
 def hash_password(password: str, salt: Optional[str] = None) -> tuple[str, str]:
@@ -188,8 +268,56 @@ def init_firebase():
         cred = credentials.Certificate(json.loads(raw))
         firebase_app = firebase_admin.initialize_app(cred)
         return firebase_app
-    except Exception:
+    except Exception as e:
+        logger.warning("Firebase init не вдалося: %s", e)
         return None
+
+
+def _firebase_ready() -> bool:
+    return FIREBASE_AVAILABLE and init_firebase() is not None
+
+
+def send_to_tokens(db: Session, tokens: List[str], title: str, body: str, data: Optional[dict] = None):
+    """Надсилає push пачками (до 500) і прибирає недійсні токени. Повертає (надіслано, всього)."""
+    tokens = [t for t in dict.fromkeys(tokens) if t]  # унікальні, без порожніх
+    if not _firebase_ready() or not tokens:
+        return 0, len(tokens)
+    payload = {k: str(v) for k, v in (data or {}).items()}
+    notif = messaging.Notification(title=title, body=body)
+    sent = 0
+    dead: list = []
+    multicast_fn = getattr(messaging, "send_each_for_multicast", None)
+    for i in range(0, len(tokens), 500):
+        chunk = tokens[i:i + 500]
+        if multicast_fn:
+            try:
+                resp = multicast_fn(messaging.MulticastMessage(notification=notif, data=payload, tokens=chunk))
+            except Exception as e:
+                logger.warning("multicast помилка: %s", e)
+                continue
+            for idx, sr in enumerate(resp.responses):
+                if sr.success:
+                    sent += 1
+                else:
+                    name = type(sr.exception).__name__ if sr.exception else ""
+                    if "Unregistered" in name or "SenderIdMismatch" in name or "InvalidArgument" in name:
+                        dead.append(chunk[idx])
+        else:
+            for tok in chunk:
+                try:
+                    messaging.send(messaging.Message(notification=notif, data=payload, token=tok))
+                    sent += 1
+                except Exception as e:
+                    if "Unregistered" in type(e).__name__ or "SenderIdMismatch" in type(e).__name__:
+                        dead.append(tok)
+    if dead:
+        for tok in dead:
+            obj = db.get(Device, tok)
+            if obj:
+                db.delete(obj)
+        db.commit()
+        logger.info("Прибрано недійсних токенів: %d", len(dead))
+    return sent, len(tokens)
 
 
 # ==================== Pydantic Models ====================
@@ -226,6 +354,7 @@ class DeviceIn(BaseModel):
     token: str
     platform: str = "android"
     app_version: str = ""
+    client_id: str = ""
 
 
 class PushIn(BaseModel):
@@ -367,17 +496,26 @@ def delete_reference(ref_id: str, admin: AdminUser = Depends(require_admin), db:
 
 # ==================== Devices ====================
 @app.post("/devices/register")
-def register_device(data: DeviceIn, db: Session = Depends(get_db)):
+def register_device(data: DeviceIn, request: Request, db: Session = Depends(get_db)):
+    if not allow_rate(f"devreg:{client_ip(request)}", 60, 60):
+        raise HTTPException(429, "Забагато запитів, спробуйте трохи згодом")
     token = (data.token or "").strip()
     if not token:
         raise HTTPException(400, "Token обов'язковий")
+    cid = (data.client_id or "").strip()
     now = datetime.now(timezone.utc)
     dev = db.get(Device, token)
     if dev:
         dev.updated_at = now
         dev.last_seen_at = now
+        if data.platform:
+            dev.platform = data.platform
+        if data.app_version:
+            dev.app_version = data.app_version
+        if cid:
+            dev.client_id = cid
     else:
-        dev = Device(token=token, platform=data.platform, app_version=data.app_version, created_at=now, updated_at=now, last_seen_at=now)
+        dev = Device(token=token, platform=data.platform, app_version=data.app_version, client_id=cid, created_at=now, updated_at=now, last_seen_at=now)
         db.add(dev)
     db.commit()
     return {"ok": True}
@@ -404,31 +542,26 @@ def send_push(data: PushIn, admin: AdminUser = Depends(require_admin), db: Sessi
         raise HTTPException(400, "Заголовок і текст обов'язкові")
     if not FIREBASE_AVAILABLE:
         return {"ok": False, "message": "Firebase не встановлено"}
-    fb = init_firebase()
-    if not fb:
+    if not init_firebase():
         return {"ok": False, "message": "Firebase не налаштовано"}
-    devices = db.query(Device).all()
-    tokens = [d.token for d in devices if d.token]
+    tokens = [d.token for d in db.query(Device).all() if d.token]
     if not tokens:
         return {"ok": False, "message": "Немає пристроїв"}
-    sent = 0
-    for token in tokens:
-        try:
-            msg = messaging.Message(notification=messaging.Notification(title=data.title.strip(), body=data.body.strip()), token=token)
-            messaging.send(msg)
-            sent += 1
-        except Exception:
-            pass
-    return {"ok": True, "sent": sent, "total": len(tokens)}
+    sent, total = send_to_tokens(db, tokens, data.title.strip(), data.body.strip())
+    return {"ok": True, "sent": sent, "total": total}
 
 
 # ==================== Chat ====================
 @app.post("/chat/question", response_model=ChatMessageOut, status_code=201)
-def create_chat_question(data: ChatQuestionIn, db: Session = Depends(get_db)):
+def create_chat_question(data: ChatQuestionIn, request: Request, db: Session = Depends(get_db)):
+    if not allow_rate(f"chatq:{client_ip(request)}", 10, 60):
+        raise HTTPException(429, "Забагато запитань поспіль, зачекайте хвилину")
     client_id = (data.client_id or "").strip()
     question = (data.question or "").strip()
     if not client_id or not question:
         raise HTTPException(400, "client_id та питання обов'язкові")
+    if len(question) > 4000:
+        raise HTTPException(400, "Питання задовге")
     msg = ChatMessage(id=f"q{uuid.uuid4().hex[:12]}", client_id=client_id, question=question)
     db.add(msg)
     db.commit()
@@ -461,15 +594,10 @@ def answer_chat_message(message_id: str, data: ChatAnswerIn, admin: AdminUser = 
     msg.answered_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(msg)
-    # Push-сповіщення про відповідь
-    if FIREBASE_AVAILABLE and init_firebase():
-        for device in db.query(Device).all():
-            try:
-                notification = messaging.Notification(title="Відповідь у чаті", body="На ваше питання надано відповідь")
-                fcm_msg = messaging.Message(notification=notification, data={"type": "chat_answer"}, token=device.token)
-                messaging.send(fcm_msg)
-            except Exception:
-                pass
+    # Push-сповіщення лише на пристрої автора питання (за client_id)
+    asker_tokens = [d.token for d in db.query(Device).filter(Device.client_id == msg.client_id).all() if d.token]
+    if asker_tokens:
+        send_to_tokens(db, asker_tokens, "Відповідь у чаті", "На ваше питання надано відповідь", {"type": "chat_answer", "message_id": msg.id})
     return msg
 
 
@@ -556,6 +684,15 @@ def root():
     return HTMLResponse('<a href="/admin">Адмін-панель</a>')
 
 
+@app.get("/health")
+def health(db: Session = Depends(get_db)):
+    try:
+        db.execute(text("SELECT 1"))
+        return {"status": "ok"}
+    except Exception:
+        raise HTTPException(503, "База даних недоступна")
+
+
 @app.get("/setup", response_class=HTMLResponse)
 def setup_page(db: Session = Depends(get_db)):
     if admin_exists(db):
@@ -582,25 +719,39 @@ def login_page(request: Request, db: Session = Depends(get_db)):
         return RedirectResponse(url="/setup", status_code=303)
     msg = '<div class="ok">Обліковий запис створено. Увійдіть.</div>' if request.query_params.get("created") else ''
     err = '<div class="err">Невірний логін або пароль</div>' if request.query_params.get("error") else ''
+    if request.query_params.get("locked"):
+        err = '<div class="err">Забагато спроб входу. Спробуйте за кілька хвилин.</div>'
     return HTMLResponse(f"""<html lang="uk"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>Вхід | Доброчесність</title>{LOGIN_STYLE}</head><body><div class="card"><div class="logo">Д</div><h1>Вхід в адмін-панель</h1><p class="sub">Система обліку доброчесності</p>{msg}{err}<form method="post"><label>Логін</label><input name="username" placeholder="Введіть логін" required><label>Пароль</label><input name="password" type="password" placeholder="Введіть пароль" required><button>Увійти</button></form></div></body></html>""")
 
 
 @app.post("/login")
-def login(username: str = Form(...), password: str = Form(...), db: Session = Depends(get_db)):
+def login(request: Request, username: str = Form(...), password: str = Form(...), db: Session = Depends(get_db)):
+    key = f"{client_ip(request)}:{username.strip().lower()}"
+    if login_lock_remaining(key) > 0:
+        return RedirectResponse(url="/login?locked=1", status_code=303)
     user = db.query(AdminUser).filter(AdminUser.username == username.strip(), AdminUser.is_active == True).first()
     if not user or not verify_password(password, user.password_hash, user.salt):
+        login_register_fail(key)
         return RedirectResponse(url="/login?error=1", status_code=303)
+    login_reset(key)
     user.last_login_at = datetime.now(timezone.utc)
     db.commit()
     response = RedirectResponse(url="/admin", status_code=303)
-    response.set_cookie(key=SESSION_COOKIE, value=create_session_cookie(user.id), httponly=True)
+    response.set_cookie(
+        key=SESSION_COOKIE,
+        value=create_session_cookie(user.id),
+        httponly=True,
+        secure=COOKIE_SECURE,
+        samesite="lax",
+        max_age=SESSION_TTL_SECONDS,
+    )
     return response
 
 
 @app.get("/logout")
 def logout():
     response = RedirectResponse(url="/login?logout=1", status_code=303)
-    response.delete_cookie(SESSION_COOKIE)
+    response.delete_cookie(SESSION_COOKIE, secure=COOKIE_SECURE, samesite="lax")
     return response
 
 
@@ -695,6 +846,7 @@ td:last-child{white-space:nowrap;width:1%}
 .toolbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:16px}
 .toolbar label{margin:0;font-weight:600;color:var(--muted)}
 .toolbar select{width:auto;min-width:200px}
+.toolbar input{flex:1;min-width:220px}
 
 /* ---------- Tables ---------- */
 .table-wrap{width:100%;overflow:auto;border-radius:12px;border:1px solid var(--line)}
@@ -770,13 +922,13 @@ td b{font-weight:700;color:var(--text)}
 <div id="status" class="status"></div>
 
 <section id="tab-events" class="section active">
-<div class="card"><h3><span class="ic">➕</span> Нова подія</h3><input type="hidden" id="eventId"><div class="form-group"><label>Назва</label><input id="title" placeholder="Наприклад: Подання щорічної декларації"></div><div class="grid-2"><div><label>Дата</label><input id="date" type="date"></div><div><label>Категорія</label><select id="cat"><option value="declaration">Декларування</option><option value="conflict">Конфлікт інтересів</option><option value="gifts">Подарунки</option><option value="notice">Повідомлення</option><option value="training">Навчання</option></select></div></div><div class="form-group mt-2"><label>Опис</label><textarea id="description" rows="2" placeholder="Короткий опис події"></textarea></div><div class="form-group"><label>Інструкція</label><textarea id="instruction" rows="2" placeholder="Що потрібно зробити працівнику"></textarea></div><div class="grid-2"><div><label>Посилання</label><input id="link" placeholder="https://"></div><div><label>Нагадування, днів до події</label><input id="reminders" value="30,10,3,0"></div></div><div class="actions mt-2"><button class="btn-main" onclick="saveEvent()">Зберегти подію</button><button class="btn-light" onclick="clearForm()">Очистити форму</button></div></div>
-<div class="card"><h3><span class="ic">📋</span> Список подій</h3><div class="table-wrap"><table><thead><tr><th>Дата</th><th>Назва</th><th>Категорія</th><th>Дії</th></tr></thead><tbody id="events"></tbody></table></div></div>
+<div class="card"><h3><span class="ic">➕</span> Нова подія</h3><input type="hidden" id="eventId"><div class="form-group"><label>Назва</label><input id="title" placeholder="Наприклад: Подання щорічної декларації"></div><div class="grid-2"><div><label>Дата</label><input id="date" type="date"></div><div><label>Категорія</label><select id="cat"><option value="declaration">Декларування</option><option value="conflict">Конфлікт інтересів</option><option value="gifts">Подарунки</option><option value="notice">Повідомлення</option><option value="training">Навчання</option></select></div></div><div class="form-group mt-2"><label>Опис</label><textarea id="description" rows="2" placeholder="Короткий опис події"></textarea></div><div class="form-group"><label>Інструкція</label><textarea id="instruction" rows="2" placeholder="Що потрібно зробити працівнику"></textarea></div><div class="grid-2"><div><label>Посилання</label><input id="link" placeholder="https://"></div><div><label>Нагадування, днів до події</label><input id="reminders" value="30,10,3,0"></div></div><div class="grid-2"><div><label>Аудиторія</label><input id="audience" value="Усі працівники"></div><div><label>Повторюваність</label><input id="recur" placeholder="напр. yearly, monthly — або порожньо"></div></div><div class="actions mt-2"><button class="btn-main" onclick="saveEvent()">Зберегти подію</button><button class="btn-light" onclick="clearForm()">Очистити форму</button></div></div>
+<div class="card"><h3><span class="ic">📋</span> Список подій</h3><div class="toolbar"><input id="eventSearch" oninput="renderEvents()" placeholder="Пошук за назвою, описом або категорією"></div><div class="table-wrap"><table><thead><tr><th>Дата</th><th>Назва</th><th>Категорія</th><th>Аудиторія</th><th>Перегляди</th><th>Дії</th></tr></thead><tbody id="events"></tbody></table></div></div>
 </section>
 
 <section id="tab-reference" class="section">
 <div class="card"><h3><span class="ic">➕</span> Новий запис довідки</h3><input type="hidden" id="refId"><div class="form-group"><label>Назва</label><input id="refTitle" placeholder="Назва матеріалу"></div><div class="form-group"><label>Опис</label><textarea id="refDescription" rows="3" placeholder="Опис матеріалу"></textarea></div><div class="form-group"><label>Посилання</label><input id="refLink" placeholder="https://"></div><button class="btn-main" onclick="saveRef()">Зберегти запис</button></div>
-<div class="card"><h3><span class="ic">📚</span> Список довідки</h3><div class="table-wrap"><table><thead><tr><th>Назва</th><th>Опис</th><th>Дії</th></tr></thead><tbody id="refs"></tbody></table></div></div>
+<div class="card"><h3><span class="ic">📚</span> Список довідки</h3><div class="toolbar"><input id="refSearch" oninput="renderRefs()" placeholder="Пошук за назвою або описом"></div><div class="table-wrap"><table><thead><tr><th>Назва</th><th>Опис</th><th>Дії</th></tr></thead><tbody id="refs"></tbody></table></div></div>
 </section>
 
 <section id="tab-admin" class="section">
@@ -789,11 +941,11 @@ td b{font-weight:700;color:var(--text)}
 </section>
 
 <section id="tab-devices" class="section">
-<div class="card"><h3><span class="ic">📱</span> Зареєстровані пристрої</h3><div class="table-wrap"><table><thead><tr><th>Token</th><th>Платформа</th><th>Версія</th><th>Дії</th></tr></thead><tbody id="devices"></tbody></table></div></div>
+<div class="card"><h3><span class="ic">📱</span> Зареєстровані пристрої</h3><div class="toolbar"><input id="deviceSearch" oninput="renderDevices()" placeholder="Пошук за токеном, платформою або ID користувача"></div><div class="table-wrap"><table><thead><tr><th>Token</th><th>ID користувача</th><th>Платформа</th><th>Версія</th><th>Дії</th></tr></thead><tbody id="devices"></tbody></table></div></div>
 </section>
 
 <section id="tab-chat" class="section">
-<div class="card"><h3><span class="ic">💬</span> Питання користувачів</h3><div class="toolbar"><label>Сортування:</label><select id="chatSort" onchange="loadChat()"><option value="new">Спочатку нові</option><option value="old">Спочатку старі</option><option value="wait">Спершу без відповіді</option><option value="answered">Спершу з відповіддю</option></select></div><div class="table-wrap"><table><thead><tr><th>Дата</th><th>Питання</th><th>Відповідь</th><th>Статус</th><th>Дії</th></tr></thead><tbody id="chatMessages"></tbody></table></div></div>
+<div class="card"><h3><span class="ic">💬</span> Питання користувачів</h3><div class="toolbar"><label>Сортування:</label><select id="chatSort" onchange="renderChat()"><option value="new">Спочатку нові</option><option value="old">Спочатку старі</option><option value="wait">Спершу без відповіді</option><option value="answered">Спершу з відповіддю</option></select><input id="chatSearch" oninput="renderChat()" placeholder="Пошук за питанням або ID користувача"></div><div class="table-wrap"><table><thead><tr><th>Дата</th><th>Питання</th><th>Відповідь</th><th>Статус</th><th>Дії</th></tr></thead><tbody id="chatMessages"></tbody></table></div></div>
 </section>
 </main>
 </div>
@@ -827,29 +979,39 @@ function escapeHtml(v){return String(v??'').replace(/[&<>"']/g,function(m){retur
 function jsArg(v){return String(v??'').replace(/\\/g,'\\\\').replace(/'/g,"\\'").replace(/\n/g,'\\n').replace(/\r/g,'');}
 async function req(u,o={}){const r=await fetch(u,o);if(r.redirected&&r.url.includes('/login'))location.href='/login';return r;}
 function fmtDate(v){if(!v)return'';const[y,m,d]=String(v).split('-');return `${d}.${m}.${y}`;}
+const state={events:[],refs:[],devices:[],chat:[]};
+const CAT_LABELS={declaration:'Декларування',conflict:'Конфлікт інтересів',gifts:'Подарунки',notice:'Повідомлення',training:'Навчання'};
+const catLabel=c=>CAT_LABELS[c]||c||'';
+function loadingRow(id,cols){const tb=document.getElementById(id);if(tb)tb.innerHTML=`<tr><td colspan="${cols}" class="empty">Завантаження…</td></tr>`;}
+function qval(id){const el=document.getElementById(id);return (el&&el.value||'').trim().toLowerCase();}
+function matches(q,...parts){return !q||parts.join(' ').toLowerCase().includes(q);}
 
-async function loadEvents(){try{const r=await req('/events');const d=await r.json(),tb=document.getElementById('events');tb.innerHTML='';if(!d.length){tb.innerHTML='<tr><td colspan="4" class="empty">Подій поки немає. Створіть першу подію вище.</td></tr>';return;}d.forEach(ev=>{tb.innerHTML+=`<tr><td>${fmtDate(ev.date)}</td><td><b>${escapeHtml(ev.title)}</b><br><span class="muted">${escapeHtml(ev.description)}</span></td><td><span class="badge">${escapeHtml(ev.cat)}</span></td><td><div class="actions"><button class="btn-edit" onclick='editEvent(${JSON.stringify(ev).replace(/'/g,"&#39;")})'>Редагувати</button><button class="btn-red" onclick="deleteEvent('${ev.id}')">Видалити</button></div></td></tr>`});}catch(e){showStatus('Не вдалося завантажити події',false);}}
-function editEvent(ev){document.getElementById('eventId').value=ev.id;document.getElementById('title').value=ev.title;document.getElementById('date').value=ev.date;document.getElementById('cat').value=ev.cat;document.getElementById('description').value=ev.description||'';document.getElementById('instruction').value=ev.instruction||'';document.getElementById('link').value=ev.link||'';document.getElementById('reminders').value=(ev.reminders||[]).join(',');window.scrollTo({top:0,behavior:'smooth'});showStatus('Відкрито редагування події');}
-function clearForm(){document.getElementById('eventId').value='';document.getElementById('title').value='';document.getElementById('date').value='';document.getElementById('description').value='';document.getElementById('instruction').value='';document.getElementById('link').value='';document.getElementById('reminders').value='30,10,3,0';}
-async function saveEvent(){const id=document.getElementById('eventId').value;const p={title:document.getElementById('title').value.trim(),date:document.getElementById('date').value,cat:document.getElementById('cat').value,description:document.getElementById('description').value,instruction:document.getElementById('instruction').value,link:document.getElementById('link').value,reminders:document.getElementById('reminders').value.split(',').map(x=>Number(x.trim())).filter(x=>!isNaN(x))};if(!p.title||!p.date){showStatus('Заповніть назву та дату',false);return;}try{const r=await req(id?`/events/${id}`:'/events',{method:id?'PUT':'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)});if(!r.ok)throw new Error('Не вдалося зберегти');clearForm();await loadEvents();showStatus(id?'Подію оновлено':'Подію створено');}catch(e){showStatus(e.message||'Помилка',false);}}
-async function deleteEvent(id){if(!confirm('Видалити подію?'))return;await req(`/events/${id}`,{method:'DELETE'});await loadEvents();showStatus('Подію видалено');}
+async function loadEvents(){loadingRow('events',6);try{const r=await req('/events');state.events=await r.json();renderEvents();}catch(e){showStatus('Не вдалося завантажити події',false);}}
+function renderEvents(){const q=qval('eventSearch');const tb=document.getElementById('events');const d=state.events.filter(ev=>matches(q,ev.title,ev.description,ev.cat,catLabel(ev.cat),ev.audience));tb.innerHTML='';if(!d.length){tb.innerHTML=`<tr><td colspan="6" class="empty">${state.events.length?'Нічого не знайдено':'Подій поки немає. Створіть першу подію вище.'}</td></tr>`;return;}d.forEach(ev=>{tb.innerHTML+=`<tr><td>${fmtDate(ev.date)}</td><td><b>${escapeHtml(ev.title)}</b><br><span class="muted">${escapeHtml(ev.description)}</span></td><td><span class="badge">${escapeHtml(catLabel(ev.cat))}</span></td><td>${escapeHtml(ev.audience||'')}</td><td>${ev.views??0}</td><td><div class="actions"><button class="btn-edit" onclick='editEvent(${JSON.stringify(ev).replace(/'/g,"&#39;")})'>Редагувати</button><button class="btn-red" onclick="deleteEvent('${ev.id}')">Видалити</button></div></td></tr>`});}
+function editEvent(ev){document.getElementById('eventId').value=ev.id;document.getElementById('title').value=ev.title;document.getElementById('date').value=ev.date;document.getElementById('cat').value=ev.cat;document.getElementById('description').value=ev.description||'';document.getElementById('instruction').value=ev.instruction||'';document.getElementById('link').value=ev.link||'';document.getElementById('reminders').value=(ev.reminders||[]).join(',');document.getElementById('audience').value=ev.audience||'Усі працівники';document.getElementById('recur').value=ev.recur||'';window.scrollTo({top:0,behavior:'smooth'});showStatus('Відкрито редагування події');}
+function clearForm(){document.getElementById('eventId').value='';document.getElementById('title').value='';document.getElementById('date').value='';document.getElementById('description').value='';document.getElementById('instruction').value='';document.getElementById('link').value='';document.getElementById('reminders').value='30,10,3,0';document.getElementById('audience').value='Усі працівники';document.getElementById('recur').value='';}
+async function saveEvent(){const id=document.getElementById('eventId').value;const p={title:document.getElementById('title').value.trim(),date:document.getElementById('date').value,cat:document.getElementById('cat').value,description:document.getElementById('description').value,instruction:document.getElementById('instruction').value,link:document.getElementById('link').value,audience:document.getElementById('audience').value.trim()||'Усі працівники',recur:document.getElementById('recur').value.trim(),reminders:document.getElementById('reminders').value.split(',').map(x=>Number(x.trim())).filter(x=>!isNaN(x))};if(!p.title||!p.date){showStatus('Заповніть назву та дату',false);return;}try{const r=await req(id?`/events/${id}`:'/events',{method:id?'PUT':'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)});if(!r.ok)throw new Error('Не вдалося зберегти');clearForm();await loadEvents();showStatus(id?'Подію оновлено':'Подію створено');}catch(e){showStatus(e.message||'Помилка',false);}}
+async function deleteEvent(id){if(!confirm('Видалити подію?'))return;try{const r=await req(`/events/${id}`,{method:'DELETE'});if(!r.ok)throw new Error();await loadEvents();showStatus('Подію видалено');}catch(e){showStatus('Не вдалося видалити подію',false);}}
 
-async function loadRefs(){try{const r=await req('/reference');const d=await r.json();const tb=document.getElementById('refs');tb.innerHTML='';if(!d.length){tb.innerHTML='<tr><td colspan="3" class="empty">Записів довідки поки немає.</td></tr>';return;}d.forEach(x=>{tb.innerHTML+=`<tr><td><b>${escapeHtml(x.title)}</b>${x.link?`<br><span class="muted">${escapeHtml(x.link)}</span>`:''}</td><td>${escapeHtml(x.description)}</td><td><div class="actions"><button class="btn-edit" onclick='editRef(${JSON.stringify(x).replace(/'/g,"&#39;")})'>Редагувати</button><button class="btn-red" onclick="deleteRef('${x.id}')">Видалити</button></div></td></tr>`});}catch(e){showStatus('Не вдалося завантажити довідку',false);}}
+async function loadRefs(){loadingRow('refs',3);try{const r=await req('/reference');state.refs=await r.json();renderRefs();}catch(e){showStatus('Не вдалося завантажити довідку',false);}}
+function renderRefs(){const q=qval('refSearch');const tb=document.getElementById('refs');const d=state.refs.filter(x=>matches(q,x.title,x.description,x.link));tb.innerHTML='';if(!d.length){tb.innerHTML=`<tr><td colspan="3" class="empty">${state.refs.length?'Нічого не знайдено':'Записів довідки поки немає.'}</td></tr>`;return;}d.forEach(x=>{tb.innerHTML+=`<tr><td><b>${escapeHtml(x.title)}</b>${x.link?`<br><span class="muted">${escapeHtml(x.link)}</span>`:''}</td><td>${escapeHtml(x.description)}</td><td><div class="actions"><button class="btn-edit" onclick='editRef(${JSON.stringify(x).replace(/'/g,"&#39;")})'>Редагувати</button><button class="btn-red" onclick="deleteRef('${x.id}')">Видалити</button></div></td></tr>`});}
 function editRef(r){document.getElementById('refId').value=r.id;document.getElementById('refTitle').value=r.title;document.getElementById('refDescription').value=r.description||'';document.getElementById('refLink').value=r.link||'';window.scrollTo({top:0,behavior:'smooth'});}
 async function saveRef(){const id=document.getElementById('refId').value;const p={title:document.getElementById('refTitle').value.trim(),description:document.getElementById('refDescription').value,link:document.getElementById('refLink').value};if(!p.title){showStatus('Заповніть назву',false);return;}try{const r=await req(id?`/reference/${id}`:'/reference',{method:id?'PUT':'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)});if(!r.ok)throw new Error();document.getElementById('refId').value='';document.getElementById('refTitle').value='';document.getElementById('refDescription').value='';document.getElementById('refLink').value='';await loadRefs();showStatus(id?'Запис оновлено':'Запис створено');}catch(e){showStatus('Помилка',false);}}
-async function deleteRef(id){if(!confirm('Видалити запис?'))return;await req(`/reference/${id}`,{method:'DELETE'});await loadRefs();showStatus('Запис видалено');}
+async function deleteRef(id){if(!confirm('Видалити запис?'))return;try{const r=await req(`/reference/${id}`,{method:'DELETE'});if(!r.ok)throw new Error();await loadRefs();showStatus('Запис видалено');}catch(e){showStatus('Не вдалося видалити запис',false);}}
 
-async function loadAdmins(){try{const r=await req('/users');const d=await r.json();const tb=document.getElementById('users');tb.innerHTML='';d.forEach(u=>{tb.innerHTML+=`<tr><td><b>${escapeHtml(u.username)}</b></td><td>${u.is_active?'<span class="pill pill-ok">Активний</span>':'<span class="pill pill-off">Заблокований</span>'}</td><td><div class="actions"><button class="btn-edit" onclick="changePass('${u.id}')">Змінити пароль</button><button class="btn-red" onclick="toggleUser('${u.id}',${u.is_active})">${u.is_active?'Заблокувати':'Активувати'}</button></div></td></tr>`});}catch(e){showStatus('Не вдалося завантажити адміністраторів',false);}}
+async function loadAdmins(){loadingRow('users',3);try{const r=await req('/users');const d=await r.json();const tb=document.getElementById('users');tb.innerHTML='';d.forEach(u=>{tb.innerHTML+=`<tr><td><b>${escapeHtml(u.username)}</b></td><td>${u.is_active?'<span class="pill pill-ok">Активний</span>':'<span class="pill pill-off">Заблокований</span>'}</td><td><div class="actions"><button class="btn-edit" onclick="changePass('${u.id}')">Змінити пароль</button><button class="btn-red" onclick="toggleUser('${u.id}',${u.is_active})">${u.is_active?'Заблокувати':'Активувати'}</button></div></td></tr>`});}catch(e){showStatus('Не вдалося завантажити адміністраторів',false);}}
 async function createUser(){const username=document.getElementById('newUser').value.trim();const password=document.getElementById('newPass').value;if(!username||password.length<8){showStatus('Логін обов’язковий, пароль мін. 8 символів',false);return;}try{const r=await req('/users',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({username,password})});if(!r.ok)throw new Error();document.getElementById('newUser').value='';document.getElementById('newPass').value='';await loadAdmins();showStatus('Адміністратора створено');}catch(e){showStatus('Помилка створення',false);}}
 async function changePass(id){const p=prompt('Новий пароль (мінімум 8 символів):');if(!p||p.length<8){showStatus('Пароль має бути не менше 8 символів',false);return;}await req(`/users/${id}/password`,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({password:p})});showStatus('Пароль змінено');}
 async function toggleUser(id,isActive){if(!confirm(isActive?'Заблокувати адміністратора?':'Активувати адміністратора?'))return;await req(`/users/${id}/toggle`,{method:'POST'});await loadAdmins();showStatus('Статус змінено');}
 
 async function sendPush(){const title=document.getElementById('pushTitle').value.trim();const body=document.getElementById('pushBody').value.trim();if(!title||!body){showStatus('Заповніть заголовок і текст',false);return;}try{const r=await req('/push/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title,body})});const d=await r.json();showStatus(d.ok?`Надіслано ${d.sent} із ${d.total}`:'Помилка: '+d.message,d.ok);}catch(e){showStatus('Помилка',false);}}
 
-async function loadDevices(){try{const r=await req('/devices');const d=await r.json();const tb=document.getElementById('devices');tb.innerHTML='';if(!d.length){tb.innerHTML='<tr><td colspan="4" class="empty">Пристроїв поки немає.</td></tr>';return;}d.forEach(x=>{tb.innerHTML+=`<tr><td><span class="mono">${escapeHtml(x.token)}</span></td><td>${escapeHtml(x.platform)}</td><td>${escapeHtml(x.app_version)||'—'}</td><td><button class="btn-red" onclick="deleteDevice('${jsArg(x.token)}')">Видалити</button></td></tr>`});}catch(e){showStatus('Не вдалося завантажити пристрої',false);}}
-async function deleteDevice(token){if(!confirm('Видалити пристрій?'))return;await req(`/devices/${encodeURIComponent(token)}`,{method:'DELETE'});await loadDevices();showStatus('Пристрій видалено');}
+async function loadDevices(){loadingRow('devices',5);try{const r=await req('/devices');state.devices=await r.json();renderDevices();}catch(e){showStatus('Не вдалося завантажити пристрої',false);}}
+function renderDevices(){const q=qval('deviceSearch');const tb=document.getElementById('devices');const d=state.devices.filter(x=>matches(q,x.token,x.platform,x.app_version,x.client_id));tb.innerHTML='';if(!d.length){tb.innerHTML=`<tr><td colspan="5" class="empty">${state.devices.length?'Нічого не знайдено':'Пристроїв поки немає.'}</td></tr>`;return;}d.forEach(x=>{tb.innerHTML+=`<tr><td><span class="mono">${escapeHtml(x.token)}</span></td><td><span class="mono">${escapeHtml(x.client_id)||'—'}</span></td><td>${escapeHtml(x.platform)}</td><td>${escapeHtml(x.app_version)||'—'}</td><td><button class="btn-red" onclick="deleteDevice('${jsArg(x.token)}')">Видалити</button></td></tr>`});}
+async function deleteDevice(token){if(!confirm('Видалити пристрій?'))return;try{const r=await req(`/devices/${encodeURIComponent(token)}`,{method:'DELETE'});if(!r.ok)throw new Error();await loadDevices();showStatus('Пристрій видалено');}catch(e){showStatus('Не вдалося видалити пристрій',false);}}
 
-async function loadChat(){try{const r=await req('/chat/admin');const d=await r.json();const tb=document.getElementById('chatMessages');tb.innerHTML='';if(!d.length){tb.innerHTML='<tr><td colspan="5" class="empty">Запитань поки немає.</td></tr>';return;}const sort=(document.getElementById('chatSort')||{}).value||'new';const ts=x=>x.created_at?new Date(x.created_at).getTime():0;const isAns=x=>(x.answer&&x.answer.trim())?1:0;d.sort((a,b)=>{if(sort==='old')return ts(a)-ts(b);if(sort==='wait')return (isAns(a)-isAns(b))||(ts(b)-ts(a));if(sort==='answered')return (isAns(b)-isAns(a))||(ts(b)-ts(a));return ts(b)-ts(a);});d.forEach(x=>{const answered=!!(x.answer&&x.answer.trim());const dateStr=x.created_at?new Date(x.created_at).toLocaleString('uk-UA'):'';tb.innerHTML+=`<tr><td>${escapeHtml(dateStr)}</td><td><b>${escapeHtml(x.question)}</b><br><span class="muted">${escapeHtml(x.client_id)}</span></td><td>${answered?escapeHtml(x.answer):'<textarea id="a_'+x.id+'" rows="2" placeholder="Введіть відповідь"></textarea>'}</td><td>${answered?'<span class="pill pill-ok">Відповідь надано</span>':'<span class="pill pill-wait">Очікує</span>'}</td><td><div class="actions">${answered?'<button class="btn-edit" onclick="editAnswer(\''+x.id+'\',\''+jsArg(x.answer)+'\')">Редагувати</button>':''}<button class="btn-green" onclick="answerChat(\''+x.id+'\',document.getElementById(\'a_'+x.id+'\')?.value)">Відповісти</button><button class="btn-red" onclick="deleteMessage(\''+x.id+'\')">Видалити</button></div></td></tr>`});}catch(e){showStatus('Не вдалося завантажити чат',false);}}
+async function loadChat(){loadingRow('chatMessages',5);try{const r=await req('/chat/admin');state.chat=await r.json();renderChat();}catch(e){showStatus('Не вдалося завантажити чат',false);}}
+function renderChat(){const tb=document.getElementById('chatMessages');const q=qval('chatSearch');const sort=(document.getElementById('chatSort')||{}).value||'new';const ts=x=>x.created_at?new Date(x.created_at).getTime():0;const isAns=x=>(x.answer&&x.answer.trim())?1:0;let d=state.chat.filter(x=>matches(q,x.question,x.client_id,x.answer));d=d.slice().sort((a,b)=>{if(sort==='old')return ts(a)-ts(b);if(sort==='wait')return (isAns(a)-isAns(b))||(ts(b)-ts(a));if(sort==='answered')return (isAns(b)-isAns(a))||(ts(b)-ts(a));return ts(b)-ts(a);});tb.innerHTML='';if(!d.length){tb.innerHTML=`<tr><td colspan="5" class="empty">${state.chat.length?'Нічого не знайдено':'Запитань поки немає.'}</td></tr>`;return;}d.forEach(x=>{const answered=!!(x.answer&&x.answer.trim());const dateStr=x.created_at?new Date(x.created_at).toLocaleString('uk-UA'):'';tb.innerHTML+=`<tr><td>${escapeHtml(dateStr)}</td><td><b>${escapeHtml(x.question)}</b><br><span class="muted">${escapeHtml(x.client_id)}</span></td><td>${answered?escapeHtml(x.answer):'<textarea id="a_'+x.id+'" rows="2" placeholder="Введіть відповідь"></textarea>'}</td><td>${answered?'<span class="pill pill-ok">Відповідь надано</span>':'<span class="pill pill-wait">Очікує</span>'}</td><td><div class="actions">${answered?'<button class="btn-edit" onclick="editAnswer(\''+x.id+'\',\''+jsArg(x.answer)+'\')">Редагувати</button>':''}<button class="btn-green" onclick="answerChat(\''+x.id+'\',document.getElementById(\'a_'+x.id+'\')?.value)">Відповісти</button><button class="btn-red" onclick="deleteMessage(\''+x.id+'\')">Видалити</button></div></td></tr>`});}
 async function editAnswer(id,current){const newA=prompt('Редагувати відповідь:',current);if(newA)await answerChat(id,newA);}
 async function answerChat(id,answer){if(!answer||!answer.trim()){showStatus('Введіть відповідь',false);return;}try{const r=await req(`/chat/${id}/answer`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({answer:answer.trim()})});if(!r.ok)throw new Error();await loadChat();showStatus('Відповідь збережено');}catch(e){showStatus('Помилка',false);}}
 async function deleteMessage(id){if(!confirm('Видалити повідомлення?'))return;try{const r=await req(`/chat/${encodeURIComponent(id)}`,{method:'DELETE'});if(!r.ok)throw new Error('HTTP '+r.status);await loadChat();showStatus('Повідомлення видалено');}catch(e){showStatus('Не вдалося видалити повідомлення',false);}}
