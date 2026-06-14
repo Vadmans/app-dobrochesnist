@@ -774,13 +774,37 @@ body{
         </div>
       </div>
     </section>
+
+    <section id="tab-chat" class="section">
+      <div class="card">
+        <h3>Питання користувачів</h3>
+        <p class="muted">У цій вкладці відображаються питання, які користувачі надсилають із мобільного додатку. Адміністратор може надати відповідь, після чого користувачу буде надіслано push-повідомлення.</p>
+        <div class="btns" style="margin:12px 0">
+          <button class="green" onclick="loadChat(true)">Оновити чат</button>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Дата</th>
+                <th>Питання</th>
+                <th>Відповідь</th>
+                <th>Статус</th>
+                <th>Дії</th>
+              </tr>
+            </thead>
+            <tbody id="chatMessages"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
   </main>
 </div>
 <script>
 const titles={events:['Події та нагадування','Створення, редагування та контроль календарних подій.'],reference:['Довідка','Керування довідковими матеріалами для користувачів.'],admin:['Адміністрування','Керування адміністраторами та доступом.'],devices:['Пристрої','Зареєстровані Android-пристрої для push-повідомлень.'],push:['Push-повідомлення','Надсилання повідомлень на всі зареєстровані Android-пристрої.'],chat:['Чат','Відповіді на питання користувачів мобільного додатку.']};
 let currentTab='events';
 document.querySelectorAll('.nav button').forEach(btn=>btn.addEventListener('click',()=>switchTab(btn.dataset.tab)));
-function switchTab(tab){currentTab=tab;document.querySelectorAll('.nav button').forEach(b=>b.classList.toggle('active',b.dataset.tab===tab));document.querySelectorAll('.section').forEach(s=>s.classList.remove('active'));document.getElementById('tab-'+tab).classList.add('active');document.getElementById('pageTitle').textContent=titles[tab][0];document.getElementById('pageSub').textContent=titles[tab][1];location.hash=tab;refreshCurrent(false)}
+function switchTab(tab){currentTab=tab;document.querySelectorAll('.nav button').forEach(b=>b.classList.toggle('active',b.dataset.tab===tab));document.querySelectorAll('.section').forEach(s=>s.classList.remove('active'));const el=document.getElementById('tab-'+tab); if(!el){showStatus('Вкладку не знайдено: '+tab,false);return;} el.classList.add('active');document.getElementById('pageTitle').textContent=titles[tab][0];document.getElementById('pageSub').textContent=titles[tab][1];location.hash=tab;refreshCurrent(false)}
 function refreshCurrent(show=true){if(currentTab==='events')loadEvents(show);if(currentTab==='reference')loadRefs(show);if(currentTab==='admin')loadUsers(show);if(currentTab==='devices')loadDevices(show);if(currentTab==='push')loadDevices(false);if(currentTab==='chat')loadChat(show)}
 function showStatus(t,ok=true){const e=document.getElementById('status');e.className='status '+(ok?'ok':'err');e.textContent=t;e.style.display='block';window.scrollTo({top:0,behavior:'smooth'});setTimeout(()=>e.style.display='none',5000)}
 function escapeHtml(v){return String(v??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'",'&#039;')}
