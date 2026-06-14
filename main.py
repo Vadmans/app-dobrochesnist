@@ -194,7 +194,7 @@ def send_push_to_all(title: str, body: str):
 
 # ── Захист адмінки ────────────────────────────────────────────────────────
 ADMIN_USER = os.getenv("ADMIN_USER", "admin")
-ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "")
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "admin123")
 
 
 def _is_admin(request: Request) -> bool:
