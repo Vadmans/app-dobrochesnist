@@ -68,10 +68,28 @@ class AdminUser(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
     last_login_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
+class Device(Base):
+    __tablename__ = "devices"
+    token: Mapped[str] = mapped_column(String, primary_key=True)
+    platform: Mapped[str] = mapped_column(String, default="android")
+    app_version: Mapped[str] = mapped_column(String, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
 Base.metadata.create_all(engine)
 
 def ensure_schema():
-    for stmt in ["ALTER TABLE events ADD COLUMN link VARCHAR DEFAULT ''"]:
+    stmts = [
+        "ALTER TABLE events ADD COLUMN link VARCHAR DEFAULT ''",
+        "ALTER TABLE devices ADD COLUMN platform VARCHAR DEFAULT 'android'",
+        "ALTER TABLE devices ADD COLUMN app_version VARCHAR DEFAULT ''",
+        "ALTER TABLE devices ADD COLUMN created_at TIMESTAMP",
+        "ALTER TABLE devices ADD COLUMN updated_at TIMESTAMP",
+        "ALTER TABLE devices ADD COLUMN last_seen_at TIMESTAMP",
+    ]
+    for stmt in stmts:
         try:
             with engine.begin() as conn:
                 conn.execute(text(stmt))
@@ -164,6 +182,18 @@ class ReferenceOut(ReferenceIn):
     class Config:
         from_attributes = True
 
+class DeviceIn(BaseModel):
+    token: str
+    platform: str = "android"
+    app_version: str = ""
+
+class DeviceOut(DeviceIn):
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+    last_seen_at: Optional[datetime] = None
+    class Config:
+        from_attributes = True
+
 app = FastAPI(title="Доброчесність API", version="0.3.0", docs_url=None, redoc_url=None, openapi_url=None)
 app.add_middleware(
     CORSMiddleware,
@@ -180,6 +210,7 @@ async def admin_guard(request: Request, call_next):
     method = request.method.upper()
     protected = (
         path.startswith("/admin") or path.startswith("/stats") or path.startswith("/users")
+        or (path.startswith("/devices") and not path.startswith("/devices/register"))
         or (path.startswith("/events") and method in {"POST", "PUT", "DELETE", "PATCH"} and not path.endswith("/view"))
         or (path.startswith("/reference") and method in {"POST", "PUT", "DELETE", "PATCH"})
     )
@@ -277,6 +308,43 @@ def delete_reference(ref_id: str, admin: AdminUser = Depends(require_admin), db:
 def stats(admin: AdminUser = Depends(require_admin), db: Session = Depends(get_db)):
     events = db.query(Event).all()
     return {"events": len(events), "views": sum(e.views for e in events), "categories": len({e.cat for e in events}), "by_event": [{"id": e.id, "title": e.title, "cat": e.cat, "views": e.views} for e in sorted(events, key=lambda e: e.views, reverse=True)]}
+
+@app.post("/devices/register")
+def register_device(data: DeviceIn, db: Session = Depends(get_db)):
+    token = (data.token or "").strip()
+    if not token:
+        raise HTTPException(400, "FCM token обов'язковий")
+    now = datetime.now(timezone.utc)
+    dev = db.get(Device, token)
+    if dev:
+        dev.platform = data.platform or dev.platform or "android"
+        dev.app_version = data.app_version or dev.app_version or ""
+        dev.updated_at = now
+        dev.last_seen_at = now
+    else:
+        dev = Device(
+            token=token,
+            platform=data.platform or "android",
+            app_version=data.app_version or "",
+            created_at=now,
+            updated_at=now,
+            last_seen_at=now,
+        )
+        db.add(dev)
+    db.commit()
+    return {"ok": True}
+
+@app.get("/devices", response_model=List[DeviceOut])
+def list_devices(admin: AdminUser = Depends(require_admin), db: Session = Depends(get_db)):
+    return db.query(Device).order_by(Device.updated_at.desc()).all()
+
+@app.delete("/devices/{token}", status_code=204)
+def delete_device(token: str, admin: AdminUser = Depends(require_admin), db: Session = Depends(get_db)):
+    dev = db.get(Device, token)
+    if not dev:
+        raise HTTPException(404, "Пристрій не знайдено")
+    db.delete(dev)
+    db.commit()
 
 @app.get("/users")
 def list_admin_users(admin: AdminUser = Depends(require_admin), db: Session = Depends(get_db)):
@@ -470,6 +538,7 @@ body{
       <button class="active" data-tab="events"><span class="ico">📅</span>Події</button>
       <button data-tab="reference"><span class="ico">📚</span>Довідка</button>
       <button data-tab="admin"><span class="ico">🛡️</span>Адміністрування</button>
+      <button data-tab="devices"><span class="ico">📱</span>Пристрої</button>
     </nav>
     <div class="side-footer">
       <div class="muted" style="color:rgba(255,255,255,.7)">Швидкі переходи</div>
@@ -510,14 +579,23 @@ body{
       </div>
       <div class="card"><h3>Адміністратори</h3><div class="table-wrap"><table><thead><tr><th>Логін</th><th>Статус</th><th>Останній вхід</th><th>Дії</th></tr></thead><tbody id="users"></tbody></table></div></div>
     </section>
+
+    <section id="tab-devices" class="section">
+      <div class="card">
+        <h3>Зареєстровані пристрої</h3>
+        <p class="muted">Тут мають з’являтися FCM-токени Android-пристроїв після запуску мобільного додатку.</p>
+        <div class="btns" style="margin:12px 0"><button class="green" onclick="loadDevices(true)">Оновити пристрої</button></div>
+        <div class="table-wrap"><table><thead><tr><th>Платформа</th><th>Token</th><th>Версія</th><th>Оновлено</th><th>Дії</th></tr></thead><tbody id="devices"></tbody></table></div>
+      </div>
+    </section>
   </main>
 </div>
 <script>
-const titles={events:['Події та нагадування','Створення, редагування та контроль календарних подій.'],reference:['Довідка','Керування довідковими матеріалами для користувачів.'],admin:['Адміністрування','Керування адміністраторами та доступом.']};
+const titles={events:['Події та нагадування','Створення, редагування та контроль календарних подій.'],reference:['Довідка','Керування довідковими матеріалами для користувачів.'],admin:['Адміністрування','Керування адміністраторами та доступом.'],devices:['Пристрої','Зареєстровані Android-пристрої для push-повідомлень.']};
 let currentTab='events';
 document.querySelectorAll('.nav button').forEach(btn=>btn.addEventListener('click',()=>switchTab(btn.dataset.tab)));
 function switchTab(tab){currentTab=tab;document.querySelectorAll('.nav button').forEach(b=>b.classList.toggle('active',b.dataset.tab===tab));document.querySelectorAll('.section').forEach(s=>s.classList.remove('active'));document.getElementById('tab-'+tab).classList.add('active');document.getElementById('pageTitle').textContent=titles[tab][0];document.getElementById('pageSub').textContent=titles[tab][1];location.hash=tab;refreshCurrent(false)}
-function refreshCurrent(show=true){if(currentTab==='events')loadEvents(show);if(currentTab==='reference')loadRefs(show);if(currentTab==='admin')loadUsers(show)}
+function refreshCurrent(show=true){if(currentTab==='events')loadEvents(show);if(currentTab==='reference')loadRefs(show);if(currentTab==='admin')loadUsers(show);if(currentTab==='devices')loadDevices(show)}
 function showStatus(t,ok=true){const e=document.getElementById('status');e.className='status '+(ok?'ok':'err');e.textContent=t;e.style.display='block';window.scrollTo({top:0,behavior:'smooth'});setTimeout(()=>e.style.display='none',5000)}
 function escapeHtml(v){return String(v??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'",'&#039;')}
 async function req(u,o={}){const r=await fetch(u,o);if(r.redirected&&r.url.includes('/login'))location.href='/login';return r}
@@ -537,8 +615,10 @@ async function loadUsers(show=false){try{const r=await req('/users');if(!r.ok)th
 async function createUser(){const username=document.getElementById('newUser').value.trim(),password=document.getElementById('newPass').value;if(!username||password.length<8){showStatus('Логін обов’язковий, пароль мінімум 8 символів',false);return}try{const r=await req('/users',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({username,password})});if(!r.ok)throw new Error('HTTP '+r.status+' '+await r.text());document.getElementById('newUser').value='';document.getElementById('newPass').value='';await loadUsers();showStatus('Адміністратора створено')}catch(e){showStatus('Помилка створення адміністратора: '+e.message,false)}}
 async function changeUserPassword(id){const password=prompt('Новий пароль мінімум 8 символів:');if(!password)return;if(password.length<8){showStatus('Пароль мінімум 8 символів',false);return}try{const r=await req(`/users/${id}/password`,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({password})});if(!r.ok)throw new Error('HTTP '+r.status+' '+await r.text());showStatus('Пароль змінено')}catch(e){showStatus('Помилка зміни пароля: '+e.message,false)}}
 async function toggleUser(id){if(!confirm('Змінити статус адміністратора?'))return;try{const r=await req(`/users/${id}/toggle`,{method:'POST'});if(!r.ok)throw new Error('HTTP '+r.status+' '+await r.text());await loadUsers();showStatus('Статус змінено')}catch(e){showStatus('Помилка зміни статусу: '+e.message,false)}}
-loadEvents();loadRefs();loadUsers();loadStats();
-if(location.hash){const tab=location.hash.replace('#','');if(['events','reference','admin'].includes(tab))switchTab(tab)}
+async function loadDevices(show=false){try{const r=await req('/devices');if(!r.ok)throw new Error('HTTP '+r.status);const d=await r.json(),tb=document.getElementById('devices');tb.innerHTML='';if(!d.length){tb.innerHTML='<tr><td colspan="5"><div class="empty">Пристроїв поки немає. Відкрий мобільний додаток на телефоні та дозволь сповіщення.</div></td></tr>';return}d.forEach(x=>{const tr=document.createElement('tr');const shortToken=String(x.token||'');tr.innerHTML=`<td><span class="pill">${escapeHtml(x.platform||'android')}</span></td><td><div class="muted" style="max-width:520px;word-break:break-all">${escapeHtml(shortToken)}</div></td><td>${escapeHtml(x.app_version||'—')}</td><td>${escapeHtml(x.updated_at||x.last_seen_at||'—')}</td><td><div class="table-actions"><button class="del">Видалити</button></div></td>`;tr.querySelector('.del').onclick=()=>deleteDevice(x.token);tb.appendChild(tr)});if(show)showStatus('Список пристроїв оновлено')}catch(e){showStatus('Не вдалося завантажити пристрої: '+e.message,false)}}
+async function deleteDevice(token){if(!confirm('Видалити цей пристрій?'))return;try{const r=await req(`/devices/${encodeURIComponent(token)}`,{method:'DELETE'});if(!r.ok&&r.status!==204)throw new Error('HTTP '+r.status+' '+await r.text());await loadDevices();showStatus('Пристрій видалено')}catch(e){showStatus('Помилка видалення пристрою: '+e.message,false)}}
+loadEvents();loadRefs();loadUsers();loadDevices();loadStats();
+if(location.hash){const tab=location.hash.replace('#','');if(['events','reference','admin','devices'].includes(tab))switchTab(tab)}
 </script>
 </body>
 </html>
