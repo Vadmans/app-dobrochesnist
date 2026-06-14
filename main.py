@@ -1016,8 +1016,52 @@ function renderDevices(){const q=qval('deviceSearch');const tb=document.getEleme
 async function deleteDevice(token){if(!confirm('Видалити пристрій?'))return;try{const r=await req(`/devices/${encodeURIComponent(token)}`,{method:'DELETE'});if(!r.ok)throw new Error();await loadDevices();showStatus('Пристрій видалено');}catch(e){showStatus('Не вдалося видалити пристрій',false);}}
 
 async function loadChat(){loadingRow('chatMessages',5);try{const r=await req('/chat/admin');state.chat=await r.json();renderChat();}catch(e){showStatus('Не вдалося завантажити чат',false);}}
-function renderChat(){const tb=document.getElementById('chatMessages');const q=qval('chatSearch');const sort=(document.getElementById('chatSort')||{}).value||'new';const ts=x=>x.created_at?new Date(x.created_at).getTime():0;const isAns=x=>(x.answer&&x.answer.trim())?1:0;let d=state.chat.filter(x=>matches(q,x.question,x.client_id,x.answer));d=d.slice().sort((a,b)=>{if(sort==='old')return ts(a)-ts(b);if(sort==='wait')return (isAns(a)-isAns(b))||(ts(b)-ts(a));if(sort==='answered')return (isAns(b)-isAns(a))||(ts(b)-ts(a));return ts(b)-ts(a);});tb.innerHTML='';if(!d.length){tb.innerHTML=`<tr><td colspan="5" class="empty">${state.chat.length?'Нічого не знайдено':'Запитань поки немає.'}</td></tr>`;return;}d.forEach(x=>{const answered=!!(x.answer&&x.answer.trim());const dateStr=x.created_at?new Date(x.created_at).toLocaleString('uk-UA'):'';tb.innerHTML+=`<tr><td>${escapeHtml(dateStr)}</td><td><b>${escapeHtml(x.question)}</b><br><span class="muted">${escapeHtml(x.client_id)}</span></td><td>${answered?escapeHtml(x.answer):'<textarea id="a_'+x.id+'" rows="2" placeholder="Введіть відповідь"></textarea>'}</td><td>${answered?'<span class="pill pill-ok">Відповідь надано</span>':'<span class="pill pill-wait">Очікує</span>'}</td><td><div class="actions">${answered?'<button class="btn-edit" onclick="editAnswer(\''+x.id+'\',\''+jsArg(x.answer)+'\')">Редагувати</button>':''}<button class="btn-green" onclick="answerChat(\''+x.id+'\',document.getElementById(\'a_'+x.id+'\')?.value)">Відповісти</button><button class="btn-red" onclick="deleteMessage(\''+x.id+'\')">Видалити</button></div></td></tr>`});}
-async function editAnswer(id,current){const newA=prompt('Редагувати відповідь:',current);if(newA)await answerChat(id,newA);}
+function renderChat(){
+ const tb=document.getElementById('chatMessages');
+ const q=qval('chatSearch');
+ const sort=(document.getElementById('chatSort')||{}).value||'new';
+ const ts=x=>x.created_at?new Date(x.created_at).getTime():0;
+ const isAns=x=>(x.answer&&x.answer.trim())?1:0;
+
+ let d=state.chat.filter(x=>matches(q,x.question,x.client_id,x.answer));
+ d=d.slice().sort((a,b)=>{
+  if(sort==='old')return ts(a)-ts(b);
+  if(sort==='wait')return (isAns(a)-isAns(b))||(ts(b)-ts(a));
+  if(sort==='answered')return (isAns(b)-isAns(a))||(ts(b)-ts(a));
+  return ts(b)-ts(a);
+ });
+
+ tb.innerHTML='';
+
+ if(!d.length){
+  tb.innerHTML=`<tr><td colspan="5" class="empty">${state.chat.length?'Нічого не знайдено':'Запитань поки немає.'}</td></tr>`;
+  return;
+ }
+
+ d.forEach(x=>{
+  const answered=!!(x.answer&&x.answer.trim());
+  const dateStr=x.created_at?new Date(x.created_at).toLocaleString('uk-UA'):'';
+
+  const answerCell = answered
+   ? escapeHtml(x.answer)
+   : `<textarea id="a_${x.id}" rows="2" placeholder="Введіть відповідь"></textarea>`;
+
+  const actionButtons = answered
+   ? `<button class="btn-edit" onclick="editAnswer('${x.id}','${jsArg(x.answer)}')">Редагувати</button>
+      <button class="btn-red" onclick="deleteMessage('${x.id}')">Видалити</button>`
+   : `<button class="btn-green" onclick="answerChat('${x.id}',document.getElementById('a_${x.id}').value)">Відповісти</button>
+      <button class="btn-red" onclick="deleteMessage('${x.id}')">Видалити</button>`;
+
+  tb.innerHTML+=`
+   <tr>
+    <td>${escapeHtml(dateStr)}</td>
+    <td><b>${escapeHtml(x.question)}</b><br><span class="muted">${escapeHtml(x.client_id)}</span></td>
+    <td>${answerCell}</td>
+    <td>${answered?'<span class="pill pill-ok">Відповідь надано</span>':'<span class="pill pill-wait">Очікує</span>'}</td>
+    <td><div class="actions">${actionButtons}</div></td>
+   </tr>`;
+ });
+}async function editAnswer(id,current){const newA=prompt('Редагувати відповідь:',current);if(newA)await answerChat(id,newA);}
 async function answerChat(id,answer){if(!answer||!answer.trim()){showStatus('Введіть відповідь',false);return;}try{const r=await req(`/chat/${encodeURIComponent(id)}/answer`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({answer:answer.trim()})});if(!r.ok){let d='';try{const j=await r.json();d=j&&j.detail?(' — '+(typeof j.detail==='string'?j.detail:JSON.stringify(j.detail))):'';}catch(_){}throw new Error('HTTP '+r.status+d);}await loadChat();showStatus('Відповідь збережено');}catch(e){showStatus('Не вдалося зберегти: '+e.message,false);}}
 async function deleteMessage(id){if(!confirm('Видалити повідомлення?'))return;try{const r=await req(`/chat/${encodeURIComponent(id)}`,{method:'DELETE'});if(!r.ok){let d='';try{const j=await r.json();d=j&&j.detail?(' — '+(typeof j.detail==='string'?j.detail:JSON.stringify(j.detail))):'';}catch(_){}throw new Error('HTTP '+r.status+d);}await loadChat();showStatus('Повідомлення видалено');}catch(e){showStatus('Не вдалося видалити: '+e.message,false);}}
 
