@@ -590,14 +590,16 @@ ADMIN_HTML = """<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Адмін-панель</title>
+<title>Адмін-панель | Доброчесність</title>
 <style>
-*{box-sizing:border-box}body{margin:0;font-family:Arial;background:#eef3f7}.app{display:flex;min-height:100vh}.sidebar{width:260px;background:#174c68;color:#fff;padding:20px}.brand{font-size:20px;font-weight:bold;margin-bottom:30px}.nav button{display:flex;width:100%;padding:12px;margin:5px 0;background:transparent;border:0;color:#fff;font-size:14px;cursor:pointer;border-radius:10px}.nav button.active,.nav button:hover{background:rgba(255,255,255,0.15)}.main{flex:1;padding:20px}.card{background:#fff;border-radius:16px;padding:20px;margin-bottom:20px;box-shadow:0 2px 8px rgba(0,0,0,0.05)}table{width:100%;border-collapse:collapse}th,td{padding:10px;text-align:left;border-bottom:1px solid #ddd}button{padding:8px 16px;border:0;border-radius:8px;cursor:pointer}.btn-green{background:#2c6a4e;color:#fff}.btn-red{background:#a93542;color:#fff}.btn-edit{background:#b56a12;color:#fff}.form-group{margin-bottom:15px}label{display:block;margin-bottom:5px;font-weight:bold}input,textarea,select{width:100%;padding:10px;border:1px solid #ddd;border-radius:8px}.section{display:none}.section.active{display:block}.status{padding:10px;margin-bottom:15px;border-radius:8px;display:none}.status.ok{background:#e1eee8;color:#2c6a4e;display:block}.status.err{background:#f8e1e4;color:#a93542;display:block}.flex{display:flex;gap:10px;flex-wrap:wrap}.mt-2{margin-top:10px}</style>
+:root{--bg:#eef4f8;--panel:#ffffff;--sidebar:#123f59;--sidebar2:#0d3147;--accent:#1f6f8b;--accent2:#2c8aa8;--green:#2c6a4e;--red:#a93542;--orange:#b56a12;--text:#172b3a;--muted:#6b7c88;--line:#dbe6ec;--shadow:0 14px 35px rgba(18,63,89,.10)}
+*{box-sizing:border-box}body{margin:0;font-family:Arial,Helvetica,sans-serif;background:linear-gradient(135deg,#eaf2f7 0%,#f7fafc 100%);color:var(--text)}.app{display:flex;min-height:100vh}.sidebar{width:280px;background:linear-gradient(180deg,var(--sidebar),var(--sidebar2));color:#fff;padding:20px;display:flex;flex-direction:column;position:sticky;top:0;height:100vh}.brand{display:flex;align-items:center;gap:12px;font-size:20px;font-weight:800;margin-bottom:26px}.brand-icon{width:46px;height:46px;border-radius:16px;background:rgba(255,255,255,.14);display:flex;align-items:center;justify-content:center;font-size:24px;box-shadow:inset 0 0 0 1px rgba(255,255,255,.12)}.brand small{display:block;font-size:12px;font-weight:400;opacity:.75;margin-top:2px}.nav{display:flex;flex-direction:column;gap:7px}.nav button,.logout-btn{display:flex;align-items:center;gap:10px;width:100%;padding:13px 14px;background:transparent;border:1px solid transparent;color:#fff;font-size:14px;cursor:pointer;border-radius:14px;text-align:left;transition:.15s}.nav button.active,.nav button:hover{background:rgba(255,255,255,.14);border-color:rgba(255,255,255,.12)}.sidebar-footer{margin-top:auto;padding-top:16px}.logout-btn{justify-content:center;text-decoration:none;background:rgba(169,53,66,.18);border-color:rgba(255,255,255,.12)}.logout-btn:hover{background:#a93542}.main{flex:1;padding:28px;min-width:0}.topbar{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:18px}.topbar h2{margin:0;font-size:28px}.card{background:rgba(255,255,255,.96);border:1px solid rgba(219,230,236,.9);border-radius:22px;padding:22px;margin-bottom:20px;box-shadow:var(--shadow)}.card h3{margin:0 0 18px;font-size:18px}.grid-2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.form-group{margin-bottom:14px}label{display:block;margin-bottom:7px;font-weight:700;font-size:13px;color:#2d4656}input,textarea,select{width:100%;padding:12px 13px;border:1px solid var(--line);border-radius:12px;background:#fbfdfe;color:var(--text);outline:none}input:focus,textarea:focus,select:focus{border-color:var(--accent2);box-shadow:0 0 0 3px rgba(44,138,168,.12)}button{padding:10px 16px;border:0;border-radius:12px;cursor:pointer;font-weight:700;transition:.15s}.btn-main{background:linear-gradient(135deg,var(--accent),var(--accent2));color:#fff}.btn-main:hover,.btn-green:hover,.btn-red:hover,.btn-edit:hover{filter:brightness(.96);transform:translateY(-1px)}.btn-green{background:var(--green);color:#fff}.btn-red{background:var(--red);color:#fff}.btn-edit{background:var(--orange);color:#fff}.btn-light{background:#e8f1f6;color:#174c68}.actions{display:flex;gap:8px;flex-wrap:wrap}.table-wrap{width:100%;overflow:auto;border-radius:16px;border:1px solid var(--line)}table{width:100%;border-collapse:collapse;background:#fff;min-width:760px}th,td{padding:12px 14px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top}th{background:#f4f8fb;color:#415767;font-size:13px}tr:hover td{background:#fbfdff}.section{display:none}.section.active{display:block}.status{padding:12px 14px;margin-bottom:15px;border-radius:14px;display:none;font-weight:700}.status.ok{background:#e1eee8;color:#2c6a4e;display:block}.status.err{background:#f8e1e4;color:#a93542;display:block}.badge{display:inline-block;background:#e6f0f5;color:#174c68;padding:5px 9px;border-radius:999px;font-size:12px}.muted{color:var(--muted);font-size:12px}.mt-2{margin-top:10px}@media(max-width:900px){.app{display:block}.sidebar{position:relative;width:100%;height:auto}.main{padding:18px}.grid-2{grid-template-columns:1fr}.topbar{align-items:flex-start;flex-direction:column}table{min-width:680px}}
+</style>
 </head>
 <body>
 <div class="app">
-<div class="sidebar">
-<div class="brand">📋 Доброчесність</div>
+<aside class="sidebar">
+<div class="brand"><div class="brand-icon">Д</div><div>Доброчесність<small>адмін-панель</small></div></div>
 <nav class="nav">
 <button class="active" data-tab="events">📅 Події</button>
 <button data-tab="reference">📚 Довідка</button>
@@ -606,44 +608,39 @@ ADMIN_HTML = """<!DOCTYPE html>
 <button data-tab="devices">📱 Пристрої</button>
 <button data-tab="chat">💬 Чат</button>
 </nav>
-</div>
-<div class="main">
-<div class="flex" style="justify-content:space-between"><h2 id="pageTitle">Події</h2><button onclick="refreshCurrent()">🔄 Оновити</button></div>
+<div class="sidebar-footer"><a class="logout-btn" href="/logout">↩️ Вийти</a></div>
+</aside>
+<main class="main">
+<div class="topbar"><h2 id="pageTitle">Події</h2><button class="btn-light" onclick="refreshCurrent()">🔄 Оновити</button></div>
 <div id="status" class="status"></div>
 
-<!-- Події -->
 <section id="tab-events" class="section active">
-<div class="card"><h3>➕ Нова подія</h3><input type="hidden" id="eventId"><div class="form-group"><label>Назва</label><input id="title" placeholder="Назва події"></div><div class="flex"><div style="flex:1"><label>Дата</label><input id="date" type="date"></div><div style="flex:1"><label>Категорія</label><select id="cat"><option value="declaration">Декларування</option><option value="conflict">Конфлікт інтересів</option><option value="gifts">Подарунки</option><option value="notice">Повідомлення</option><option value="training">Навчання</option></select></div></div><div class="form-group"><label>Опис</label><textarea id="description" rows="2"></textarea></div><div class="form-group"><label>Інструкція</label><textarea id="instruction" rows="2"></textarea></div><div class="flex"><div style="flex:1"><label>Посилання</label><input id="link" placeholder="https://"></div><div style="flex:1"><label>Нагадування (днів)</label><input id="reminders" value="30,10,3,0"></div></div><button onclick="saveEvent()">💾 Зберегти</button><button class="mt-2" onclick="clearForm()">🗑️ Очистити</button></div>
+<div class="card"><h3>➕ Нова подія</h3><input type="hidden" id="eventId"><div class="form-group"><label>Назва</label><input id="title" placeholder="Назва події"></div><div class="grid-2"><div><label>Дата</label><input id="date" type="date"></div><div><label>Категорія</label><select id="cat"><option value="declaration">Декларування</option><option value="conflict">Конфлікт інтересів</option><option value="gifts">Подарунки</option><option value="notice">Повідомлення</option><option value="training">Навчання</option></select></div></div><div class="form-group mt-2"><label>Опис</label><textarea id="description" rows="2"></textarea></div><div class="form-group"><label>Інструкція</label><textarea id="instruction" rows="2"></textarea></div><div class="grid-2"><div><label>Посилання</label><input id="link" placeholder="https://"></div><div><label>Нагадування, днів</label><input id="reminders" value="30,10,3,0"></div></div><div class="actions mt-2"><button class="btn-main" onclick="saveEvent()">💾 Зберегти</button><button class="btn-light" onclick="clearForm()">🗑️ Очистити</button></div></div>
 <div class="card"><h3>📋 Список подій</h3><div class="table-wrap"><table><thead><tr><th>Дата</th><th>Назва</th><th>Категорія</th><th>Дії</th></tr></thead><tbody id="events"></tbody></table></div></div>
 </section>
 
-<!-- Довідка -->
 <section id="tab-reference" class="section">
-<div class="card"><h3>➕ Новий запис</h3><input type="hidden" id="refId"><div class="form-group"><label>Назва</label><input id="refTitle"></div><div class="form-group"><label>Опис</label><textarea id="refDescription" rows="3"></textarea></div><div class="form-group"><label>Посилання</label><input id="refLink"></div><button onclick="saveRef()">💾 Зберегти</button></div>
-<div class="card"><h3>📚 Список довідки</h3><table><thead><tr><th>Назва</th><th>Опис</th><th>Дії</th></tr></thead><tbody id="refs"></tbody></table></div>
+<div class="card"><h3>➕ Новий запис довідки</h3><input type="hidden" id="refId"><div class="form-group"><label>Назва</label><input id="refTitle"></div><div class="form-group"><label>Опис</label><textarea id="refDescription" rows="3"></textarea></div><div class="form-group"><label>Посилання</label><input id="refLink"></div><button class="btn-main" onclick="saveRef()">💾 Зберегти</button></div>
+<div class="card"><h3>📚 Список довідки</h3><div class="table-wrap"><table><thead><tr><th>Назва</th><th>Опис</th><th>Дії</th></tr></thead><tbody id="refs"></tbody></table></div></div>
 </section>
 
-<!-- Адміни -->
 <section id="tab-admin" class="section">
-<div class="card"><h3>➕ Новий адмін</h3><label>Логін</label><input id="newUser"><label>Пароль</label><input id="newPass" type="password"><button onclick="createUser()">Створити</button></div>
-<div class="card"><h3>👥 Список адмінів</h3><table><thead><tr><th>Логін</th><th>Статус</th><th>Дії</th></tr></thead><tbody id="users"></tbody></table></div>
+<div class="card"><h3>➕ Новий адмін</h3><div class="grid-2"><div><label>Логін</label><input id="newUser"></div><div><label>Пароль</label><input id="newPass" type="password"></div></div><button class="btn-main mt-2" onclick="createUser()">Створити</button></div>
+<div class="card"><h3>👥 Список адмінів</h3><div class="table-wrap"><table><thead><tr><th>Логін</th><th>Статус</th><th>Дії</th></tr></thead><tbody id="users"></tbody></table></div></div>
 </section>
 
-<!-- Push -->
 <section id="tab-push" class="section">
-<div class="card"><h3>🔔 Надіслати push-повідомлення</h3><label>Заголовок</label><input id="pushTitle" placeholder="Заголовок"><label>Текст</label><textarea id="pushBody" rows="3" placeholder="Текст повідомлення"></textarea><button onclick="sendPush()" class="btn-green">📨 Надіслати всім</button></div>
+<div class="card"><h3>🔔 Надіслати push-повідомлення</h3><label>Заголовок</label><input id="pushTitle" placeholder="Заголовок"><label class="mt-2">Текст</label><textarea id="pushBody" rows="3" placeholder="Текст повідомлення"></textarea><button onclick="sendPush()" class="btn-green mt-2">📨 Надіслати всім</button></div>
 </section>
 
-<!-- Пристрої -->
 <section id="tab-devices" class="section">
-<div class="card"><h3>📱 Зареєстровані пристрої</h3><button onclick="loadDevices()" class="btn-green">🔄 Оновити</button><div class="table-wrap"><table><thead><tr><th>Token</th><th>Платформа</th><th>Версія</th><th>Дії</th></tr></thead><tbody id="devices"></tbody></table></div></div>
+<div class="card"><h3>📱 Зареєстровані пристрої</h3><button onclick="loadDevices()" class="btn-green">🔄 Оновити</button><div class="table-wrap mt-2"><table><thead><tr><th>Token</th><th>Платформа</th><th>Версія</th><th>Дії</th></tr></thead><tbody id="devices"></tbody></table></div></div>
 </section>
 
-<!-- Чат -->
 <section id="tab-chat" class="section">
-<div class="card"><h3>💬 Питання користувачів</h3><button onclick="loadChat()" class="btn-green">🔄 Оновити</button><div class="table-wrap"><tr><thead><tr><th>Дата</th><th>Питання</th><th>Відповідь</th><th>Статус</th><th>Дії</th></tr></thead><tbody id="chatMessages"></tbody></table></div></div>
+<div class="card"><h3>💬 Питання користувачів</h3><button onclick="loadChat()" class="btn-green">🔄 Оновити</button><div class="table-wrap mt-2"><table><thead><tr><th>Дата</th><th>Питання</th><th>Відповідь</th><th>Статус</th><th>Дії</th></tr></thead><tbody id="chatMessages"></tbody></table></div></div>
 </section>
-</div>
+</main>
 </div>
 
 <script>
@@ -661,56 +658,46 @@ document.querySelectorAll('.nav button').forEach(btn=>btn.addEventListener('clic
 }));
 
 function refreshCurrent(){
- if(currentTab=='events') loadEvents();
- if(currentTab=='reference') loadRefs();
- if(currentTab=='admin') loadAdmins();
- if(currentTab=='push') {}
- if(currentTab=='devices') loadDevices();
- if(currentTab=='chat') loadChat();
+ if(currentTab==='events') loadEvents();
+ if(currentTab==='reference') loadRefs();
+ if(currentTab==='admin') loadAdmins();
+ if(currentTab==='devices') loadDevices();
+ if(currentTab==='chat') loadChat();
 }
 
 function showStatus(t,ok=true){const e=document.getElementById('status');e.className='status '+(ok?'ok':'err');e.textContent=t;e.style.display='block';setTimeout(()=>e.style.display='none',3000);}
-function escapeHtml(v){return String(v??'').replace(/[&<>]/g,function(m){return m=='&'?'&amp;':m=='<'?'&lt;':m=='>'?'&gt;':m;});}
+function escapeHtml(v){return String(v??'').replace(/[&<>"']/g,function(m){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m];});}
+function jsArg(v){return String(v??'').replace(/\\/g,'\\\\').replace(/'/g,"\\'").replace(/\n/g,'\\n').replace(/\r/g,'');}
 async function req(u,o={}){const r=await fetch(u,o);if(r.redirected&&r.url.includes('/login'))location.href='/login';return r;}
 function fmtDate(v){if(!v)return'';const[y,m,d]=String(v).split('-');return `${d}.${m}.${y}`;}
 
-// Події
-async function loadEvents(){try{
- const r=await req('/events');
- const d=await r.json(), tb=document.getElementById('events');
- tb.innerHTML='';
- d.forEach(ev=>{tb.innerHTML+=`<tr><td>${fmtDate(ev.date)}</td><td><b>${escapeHtml(ev.title)}</b><br><small>${escapeHtml(ev.description)}</small></td><td><span style="background:#e6f0f5;padding:4px 8px;border-radius:12px">${escapeHtml(ev.cat)}</span></td><td><button class="btn-edit" onclick='editEvent(${JSON.stringify(ev).replace(/'/g,"&#39;")})'>✏️</button> <button class="btn-red" onclick="deleteEvent('${ev.id}')">🗑️</button></td>`});}catch(e){showStatus(e.message,false);}}
-function editEvent(ev){document.getElementById('eventId').value=ev.id;document.getElementById('title').value=ev.title;document.getElementById('date').value=ev.date;document.getElementById('cat').value=ev.cat;document.getElementById('description').value=ev.description||'';document.getElementById('instruction').value=ev.instruction||'';document.getElementById('link').value=ev.link||'';document.getElementById('reminders').value=(ev.reminders||[]).join(',');showStatus('Редагування');}
+async function loadEvents(){try{const r=await req('/events');const d=await r.json(),tb=document.getElementById('events');tb.innerHTML='';if(!d.length){tb.innerHTML='<tr><td colspan="4">Подій поки немає</td></tr>';return;}d.forEach(ev=>{tb.innerHTML+=`<tr><td>${fmtDate(ev.date)}</td><td><b>${escapeHtml(ev.title)}</b><br><span class="muted">${escapeHtml(ev.description)}</span></td><td><span class="badge">${escapeHtml(ev.cat)}</span></td><td><div class="actions"><button class="btn-edit" onclick='editEvent(${JSON.stringify(ev).replace(/'/g,"&#39;")})'>✏️</button><button class="btn-red" onclick="deleteEvent('${ev.id}')">🗑️</button></div></td></tr>`});}catch(e){showStatus(e.message,false);}}
+function editEvent(ev){document.getElementById('eventId').value=ev.id;document.getElementById('title').value=ev.title;document.getElementById('date').value=ev.date;document.getElementById('cat').value=ev.cat;document.getElementById('description').value=ev.description||'';document.getElementById('instruction').value=ev.instruction||'';document.getElementById('link').value=ev.link||'';document.getElementById('reminders').value=(ev.reminders||[]).join(',');window.scrollTo({top:0,behavior:'smooth'});showStatus('Відкрито редагування');}
 function clearForm(){document.getElementById('eventId').value='';document.getElementById('title').value='';document.getElementById('date').value='';document.getElementById('description').value='';document.getElementById('instruction').value='';document.getElementById('link').value='';document.getElementById('reminders').value='30,10,3,0';}
-async function saveEvent(){const id=document.getElementById('eventId').value;const p={title:document.getElementById('title').value,date:document.getElementById('date').value,cat:document.getElementById('cat').value,description:document.getElementById('description').value,instruction:document.getElementById('instruction').value,link:document.getElementById('link').value,reminders:document.getElementById('reminders').value.split(',').map(x=>Number(x)).filter(x=>!isNaN(x))};if(!p.title||!p.date){showStatus('Заповніть назву та дату',false);return;}try{const r=await req(id?`/events/${id}`:'/events',{method:id?'PUT':'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)});if(!r.ok)throw new Error();clearForm();await loadEvents();showStatus(id?'Оновлено':'Створено');}catch(e){showStatus('Помилка',false);}}
-async function deleteEvent(id){if(!confirm('Видалити?'))return;await req(`/events/${id}`,{method:'DELETE'});await loadEvents();showStatus('Видалено');}
+async function saveEvent(){const id=document.getElementById('eventId').value;const p={title:document.getElementById('title').value.trim(),date:document.getElementById('date').value,cat:document.getElementById('cat').value,description:document.getElementById('description').value,instruction:document.getElementById('instruction').value,link:document.getElementById('link').value,reminders:document.getElementById('reminders').value.split(',').map(x=>Number(x.trim())).filter(x=>!isNaN(x))};if(!p.title||!p.date){showStatus('Заповніть назву та дату',false);return;}try{const r=await req(id?`/events/${id}`:'/events',{method:id?'PUT':'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)});if(!r.ok)throw new Error('Не вдалося зберегти');clearForm();await loadEvents();showStatus(id?'Оновлено':'Створено');}catch(e){showStatus(e.message||'Помилка',false);}}
+async function deleteEvent(id){if(!confirm('Видалити подію?'))return;await req(`/events/${id}`,{method:'DELETE'});await loadEvents();showStatus('Видалено');}
 
-// Довідка
-async function loadRefs(){try{const r=await req('/reference');const d=await r.json();const tb=document.getElementById('refs');tb.innerHTML='';d.forEach(x=>{tb.innerHTML+=`<tr><td><b>${escapeHtml(x.title)}</b><br><small>${escapeHtml(x.description)}</small></td><td><button class="btn-edit" onclick='editRef(${JSON.stringify(x).replace(/'/g,"&#39;")})'>✏️</button> <button class="btn-red" onclick="deleteRef('${x.id}')">🗑️</button></td>`});}catch(e){}}
-function editRef(r){document.getElementById('refId').value=r.id;document.getElementById('refTitle').value=r.title;document.getElementById('refDescription').value=r.description||'';document.getElementById('refLink').value=r.link||'';}
-async function saveRef(){const id=document.getElementById('refId').value;const p={title:document.getElementById('refTitle').value,description:document.getElementById('refDescription').value,link:document.getElementById('refLink').value};if(!p.title){showStatus('Заповніть назву',false);return;}try{await req(id?`/reference/${id}`:'/reference',{method:id?'PUT':'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)});document.getElementById('refId').value='';document.getElementById('refTitle').value='';document.getElementById('refDescription').value='';document.getElementById('refLink').value='';await loadRefs();showStatus(id?'Оновлено':'Створено');}catch(e){showStatus('Помилка',false);}}
-async function deleteRef(id){if(!confirm('Видалити?'))return;await req(`/reference/${id}`,{method:'DELETE'});await loadRefs();showStatus('Видалено');}
+async function loadRefs(){try{const r=await req('/reference');const d=await r.json();const tb=document.getElementById('refs');tb.innerHTML='';if(!d.length){tb.innerHTML='<tr><td colspan="3">Записів довідки поки немає</td></tr>';return;}d.forEach(x=>{tb.innerHTML+=`<tr><td><b>${escapeHtml(x.title)}</b>${x.link?`<br><span class="muted">${escapeHtml(x.link)}</span>`:''}</td><td>${escapeHtml(x.description)}</td><td><div class="actions"><button class="btn-edit" onclick='editRef(${JSON.stringify(x).replace(/'/g,"&#39;")})'>✏️</button><button class="btn-red" onclick="deleteRef('${x.id}')">🗑️</button></div></td></tr>`});}catch(e){showStatus('Не вдалося завантажити довідку',false);}}
+function editRef(r){document.getElementById('refId').value=r.id;document.getElementById('refTitle').value=r.title;document.getElementById('refDescription').value=r.description||'';document.getElementById('refLink').value=r.link||'';window.scrollTo({top:0,behavior:'smooth'});}
+async function saveRef(){const id=document.getElementById('refId').value;const p={title:document.getElementById('refTitle').value.trim(),description:document.getElementById('refDescription').value,link:document.getElementById('refLink').value};if(!p.title){showStatus('Заповніть назву',false);return;}try{const r=await req(id?`/reference/${id}`:'/reference',{method:id?'PUT':'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)});if(!r.ok)throw new Error();document.getElementById('refId').value='';document.getElementById('refTitle').value='';document.getElementById('refDescription').value='';document.getElementById('refLink').value='';await loadRefs();showStatus(id?'Оновлено':'Створено');}catch(e){showStatus('Помилка',false);}}
+async function deleteRef(id){if(!confirm('Видалити запис?'))return;await req(`/reference/${id}`,{method:'DELETE'});await loadRefs();showStatus('Видалено');}
 
-// Адміни
-async function loadAdmins(){try{const r=await req('/users');const d=await r.json();const tb=document.getElementById('users');tb.innerHTML='';d.forEach(u=>{tb.innerHTML+=`<tr><td>${escapeHtml(u.username)}</td><td>${u.is_active?'✅ Активний':'❌ Заблокований'}</td><td><button class="btn-edit" onclick="changePass('${u.id}')">🔑</button> <button class="btn-red" onclick="toggleUser('${u.id}',${u.is_active})">${u.is_active?'🔒 Блокувати':'🔓 Активувати'}</button></td>`});}catch(e){}}
-async function createUser(){const username=document.getElementById('newUser').value;const password=document.getElementById('newPass').value;if(!username||password.length<8){showStatus('Пароль мін. 8 символів',false);return;}try{await req('/users',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({username,password})});document.getElementById('newUser').value='';document.getElementById('newPass').value='';await loadAdmins();showStatus('Створено');}catch(e){showStatus('Помилка',false);}}
-async function changePass(id){const p=prompt('Новий пароль (мін. 8 символів):');if(!p||p.length<8){showStatus('Пароль ≥8',false);return;}await req(`/users/${id}/password`,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({password:p})});showStatus('Пароль змінено');}
-async function toggleUser(id,isActive){if(!confirm(isActive?'Заблокувати?'))return;await req(`/users/${id}/toggle`,{method:'POST'});await loadAdmins();showStatus('Статус змінено');}
+async function loadAdmins(){try{const r=await req('/users');const d=await r.json();const tb=document.getElementById('users');tb.innerHTML='';d.forEach(u=>{tb.innerHTML+=`<tr><td>${escapeHtml(u.username)}</td><td>${u.is_active?'✅ Активний':'❌ Заблокований'}</td><td><div class="actions"><button class="btn-edit" onclick="changePass('${u.id}')">🔑 Пароль</button><button class="btn-red" onclick="toggleUser('${u.id}',${u.is_active})">${u.is_active?'🔒 Блокувати':'🔓 Активувати'}</button></div></td></tr>`});}catch(e){showStatus('Не вдалося завантажити адмінів',false);}}
+async function createUser(){const username=document.getElementById('newUser').value.trim();const password=document.getElementById('newPass').value;if(!username||password.length<8){showStatus('Пароль мін. 8 символів',false);return;}try{const r=await req('/users',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({username,password})});if(!r.ok)throw new Error();document.getElementById('newUser').value='';document.getElementById('newPass').value='';await loadAdmins();showStatus('Створено');}catch(e){showStatus('Помилка створення',false);}}
+async function changePass(id){const p=prompt('Новий пароль (мін. 8 символів):');if(!p||p.length<8){showStatus('Пароль має бути не менше 8 символів',false);return;}await req(`/users/${id}/password`,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({password:p})});showStatus('Пароль змінено');}
+async function toggleUser(id,isActive){if(!confirm(isActive?'Заблокувати адміністратора?':'Активувати адміністратора?'))return;await req(`/users/${id}/toggle`,{method:'POST'});await loadAdmins();showStatus('Статус змінено');}
 
-// Push
 async function sendPush(){const title=document.getElementById('pushTitle').value.trim();const body=document.getElementById('pushBody').value.trim();if(!title||!body){showStatus('Заповніть заголовок і текст',false);return;}try{const r=await req('/push/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title,body})});const d=await r.json();showStatus(d.ok?`Надіслано ${d.sent}/${d.total}`:'Помилка: '+d.message,d.ok);}catch(e){showStatus('Помилка',false);}}
 
-// Пристрої
-async function loadDevices(){try{const r=await req('/devices');const d=await r.json();const tb=document.getElementById('devices');tb.innerHTML='';d.forEach(x=>{tb.innerHTML+=`<tr><td style="font-family:monospace;font-size:11px">${escapeHtml(x.token)}</td><td>${escapeHtml(x.platform)}</td><td>${escapeHtml(x.app_version)}</td><td><button class="btn-red" onclick="deleteDevice('${escapeHtml(x.token).replace(/'/g,"\\'")}')">🗑️</button></td>`});}catch(e){}}
-async function deleteDevice(token){if(!confirm('Видалити?'))return;await req(`/devices/${encodeURIComponent(token)}`,{method:'DELETE'});await loadDevices();showStatus('Видалено');}
+async function loadDevices(){try{const r=await req('/devices');const d=await r.json();const tb=document.getElementById('devices');tb.innerHTML='';if(!d.length){tb.innerHTML='<tr><td colspan="4">Пристроїв поки немає</td></tr>';return;}d.forEach(x=>{tb.innerHTML+=`<tr><td style="font-family:monospace;font-size:11px">${escapeHtml(x.token)}</td><td>${escapeHtml(x.platform)}</td><td>${escapeHtml(x.app_version)}</td><td><button class="btn-red" onclick="deleteDevice('${jsArg(x.token)}')">🗑️</button></td></tr>`});}catch(e){showStatus('Не вдалося завантажити пристрої',false);}}
+async function deleteDevice(token){if(!confirm('Видалити пристрій?'))return;await req(`/devices/${encodeURIComponent(token)}`,{method:'DELETE'});await loadDevices();showStatus('Видалено');}
 
-// Чат
-async function loadChat(){try{const r=await req('/chat/admin');const d=await r.json();const tb=document.getElementById('chatMessages');tb.innerHTML='';if(!d.length){tb.innerHTML='<tr><td colspan="5">Немає питань</td></tr>';return;}d.forEach(x=>{const answered=!!x.answer;const dateStr=x.created_at?new Date(x.created_at).toLocaleString('uk-UA'):'';tb.innerHTML+=`<tr><td>${escapeHtml(dateStr)}</td><td><b>${escapeHtml(x.question)}</b></td><td>${answered?escapeHtml(x.answer):'<textarea id="a_'+x.id+'" rows="2" style="width:100%"></textarea>'}</td><td>${answered?'✅ Відповідь надано':'⏳ Очікує'}</td><td>${answered?'<button class="btn-edit" onclick="editAnswer(\''+x.id+'\',\''+escapeHtml(x.answer).replace(/'/g,"\\'")+'\')">✏️</button>':''}<button class="btn-green" onclick="answerChat(\''+x.id+'\',document.getElementById(\'a_'+x.id+'\')?.value)">📝</button><button class="btn-red" onclick="deleteMessage(\''+x.id+'\')">🗑️</button></td>`});}catch(e){}}
+async function loadChat(){try{const r=await req('/chat/admin');const d=await r.json();const tb=document.getElementById('chatMessages');tb.innerHTML='';if(!d.length){tb.innerHTML='<tr><td colspan="5">Немає питань</td></tr>';return;}d.forEach(x=>{const answered=!!x.answer;const dateStr=x.created_at?new Date(x.created_at).toLocaleString('uk-UA'):'';tb.innerHTML+=`<tr><td>${escapeHtml(dateStr)}</td><td><b>${escapeHtml(x.question)}</b><br><span class="muted">${escapeHtml(x.client_id)}</span></td><td>${answered?escapeHtml(x.answer):'<textarea id="a_'+x.id+'" rows="2" style="width:100%"></textarea>'}</td><td>${answered?'✅ Відповідь надано':'⏳ Очікує'}</td><td><div class="actions">${answered?'<button class="btn-edit" onclick="editAnswer(\''+x.id+'\',\''+jsArg(x.answer)+'\')">✏️</button>':''}<button class="btn-green" onclick="answerChat(\''+x.id+'\',document.getElementById(\'a_'+x.id+'\')?.value)">📝</button><button class="btn-red" onclick="deleteMessage(\''+x.id+'\')">🗑️</button></div></td></tr>`});}catch(e){showStatus('Не вдалося завантажити чат',false);}}
 async function editAnswer(id,current){const newA=prompt('Редагувати відповідь:',current);if(newA)await answerChat(id,newA);}
-async function answerChat(id,answer){if(!answer||!answer.trim()){showStatus('Введіть відповідь',false);return;}try{await req(`/chat/${id}/answer`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({answer:answer.trim()})});await loadChat();showStatus('Відповідь збережено');}catch(e){showStatus('Помилка',false);}}
-async function deleteMessage(id){if(!confirm('Видалити?'))return;await req(`/chat/${id}`,{method:'DELETE'});await loadChat();showStatus('Видалено');}
+async function answerChat(id,answer){if(!answer||!answer.trim()){showStatus('Введіть відповідь',false);return;}try{const r=await req(`/chat/${id}/answer`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({answer:answer.trim()})});if(!r.ok)throw new Error();await loadChat();showStatus('Відповідь збережено');}catch(e){showStatus('Помилка',false);}}
+async function deleteMessage(id){if(!confirm('Видалити повідомлення?'))return;await req(`/chat/${id}`,{method:'DELETE'});await loadChat();showStatus('Видалено');}
 
-loadEvents();loadRefs();loadAdmins();loadDevices();loadChat();
+loadEvents();
 </script>
 </body>
 </html>"""
