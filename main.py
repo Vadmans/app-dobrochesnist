@@ -19,9 +19,6 @@ import hmac
 import os
 import secrets
 import uuid
-import json
-import firebase_admin
-from firebase_admin import credentials, messaging
 from datetime import date, datetime, timedelta, timezone
 from typing import List, Optional
 
@@ -71,28 +68,10 @@ class AdminUser(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
     last_login_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
-class Device(Base):
-    __tablename__ = "devices"
-    token: Mapped[str] = mapped_column(String, primary_key=True)
-    platform: Mapped[str] = mapped_column(String, default="android")
-    app_version: Mapped[str] = mapped_column(String, default="")
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
-    updated_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
-    last_seen_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))
-
-
 Base.metadata.create_all(engine)
 
 def ensure_schema():
-    stmts = [
-        "ALTER TABLE events ADD COLUMN link VARCHAR DEFAULT ''",
-        "ALTER TABLE devices ADD COLUMN platform VARCHAR DEFAULT 'android'",
-        "ALTER TABLE devices ADD COLUMN app_version VARCHAR DEFAULT ''",
-        "ALTER TABLE devices ADD COLUMN created_at TIMESTAMP",
-        "ALTER TABLE devices ADD COLUMN updated_at TIMESTAMP",
-        "ALTER TABLE devices ADD COLUMN last_seen_at TIMESTAMP",
-    ]
-    for stmt in stmts:
+    for stmt in ["ALTER TABLE events ADD COLUMN link VARCHAR DEFAULT ''"]:
         try:
             with engine.begin() as conn:
                 conn.execute(text(stmt))
@@ -185,22 +164,6 @@ class ReferenceOut(ReferenceIn):
     class Config:
         from_attributes = True
 
-class DeviceIn(BaseModel):
-    token: str
-    platform: str = "android"
-    app_version: str = ""
-
-class DeviceOut(DeviceIn):
-    created_at: Optional[datetime] = None
-    updated_at: Optional[datetime] = None
-    last_seen_at: Optional[datetime] = None
-    class Config:
-        from_attributes = True
-
-class PushIn(BaseModel):
-    title: str
-    body: str
-
 app = FastAPI(title="Доброчесність API", version="0.3.0", docs_url=None, redoc_url=None, openapi_url=None)
 app.add_middleware(
     CORSMiddleware,
@@ -211,35 +174,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-firebase_app = None
-
-def init_firebase():
-    global firebase_app
-    if firebase_app:
-        return firebase_app
-    if firebase_admin._apps:
-        firebase_app = firebase_admin.get_app()
-        return firebase_app
-
-    raw = os.getenv("FIREBASE_SERVICE_ACCOUNT_JSON")
-    if not raw:
-        return None
-
-    try:
-        cred = credentials.Certificate(json.loads(raw))
-        firebase_app = firebase_admin.initialize_app(cred)
-        return firebase_app
-    except Exception as e:
-        print("Firebase init error:", e)
-        return None
-
 @app.middleware("http")
 async def admin_guard(request: Request, call_next):
     path = request.url.path
     method = request.method.upper()
     protected = (
-        path.startswith("/admin") or path.startswith("/stats") or path.startswith("/users") or path.startswith("/push")
-        or (path.startswith("/devices") and not path.startswith("/devices/register"))
+        path.startswith("/admin") or path.startswith("/stats") or path.startswith("/users")
         or (path.startswith("/events") and method in {"POST", "PUT", "DELETE", "PATCH"} and not path.endswith("/view"))
         or (path.startswith("/reference") and method in {"POST", "PUT", "DELETE", "PATCH"})
     )
@@ -247,7 +187,7 @@ async def admin_guard(request: Request, call_next):
         db = SessionLocal()
         try:
             if not get_session_user(request, db):
-                if path.startswith("/admin") or path.startswith("/stats") or path.startswith("/users") or path.startswith("/push"):
+                if path.startswith("/admin") or path.startswith("/stats") or path.startswith("/users"):
                     return RedirectResponse(url="/login", status_code=303)
                 return Response(status_code=401, content="Потрібна авторизація адміністратора")
         finally:
@@ -337,83 +277,6 @@ def delete_reference(ref_id: str, admin: AdminUser = Depends(require_admin), db:
 def stats(admin: AdminUser = Depends(require_admin), db: Session = Depends(get_db)):
     events = db.query(Event).all()
     return {"events": len(events), "views": sum(e.views for e in events), "categories": len({e.cat for e in events}), "by_event": [{"id": e.id, "title": e.title, "cat": e.cat, "views": e.views} for e in sorted(events, key=lambda e: e.views, reverse=True)]}
-
-@app.post("/devices/register")
-def register_device(data: DeviceIn, db: Session = Depends(get_db)):
-    token = (data.token or "").strip()
-    if not token:
-        raise HTTPException(400, "FCM token обов'язковий")
-    now = datetime.now(timezone.utc)
-    dev = db.get(Device, token)
-    if dev:
-        dev.platform = data.platform or dev.platform or "android"
-        dev.app_version = data.app_version or dev.app_version or ""
-        dev.updated_at = now
-        dev.last_seen_at = now
-    else:
-        dev = Device(
-            token=token,
-            platform=data.platform or "android",
-            app_version=data.app_version or "",
-            created_at=now,
-            updated_at=now,
-            last_seen_at=now,
-        )
-        db.add(dev)
-    db.commit()
-    return {"ok": True}
-
-@app.get("/devices", response_model=List[DeviceOut])
-def list_devices(admin: AdminUser = Depends(require_admin), db: Session = Depends(get_db)):
-    return db.query(Device).order_by(Device.updated_at.desc()).all()
-
-@app.delete("/devices/{token}", status_code=204)
-def delete_device(token: str, admin: AdminUser = Depends(require_admin), db: Session = Depends(get_db)):
-    dev = db.get(Device, token)
-    if not dev:
-        raise HTTPException(404, "Пристрій не знайдено")
-    db.delete(dev)
-    db.commit()
-
-@app.post("/push/send")
-def send_push(data: PushIn, admin: AdminUser = Depends(require_admin), db: Session = Depends(get_db)):
-    if not data.title.strip() or not data.body.strip():
-        raise HTTPException(400, "Заголовок і текст повідомлення обов'язкові")
-
-    fb = init_firebase()
-    if not fb:
-        raise HTTPException(500, "Firebase не налаштовано. Перевір змінну FIREBASE_SERVICE_ACCOUNT_JSON на Render.")
-
-    devices = db.query(Device).all()
-    tokens = [d.token for d in devices if d.token]
-
-    if not tokens:
-        return {"ok": False, "sent": 0, "failed": 0, "message": "Немає зареєстрованих пристроїв"}
-
-    sent = 0
-    failed = 0
-    errors = []
-
-    for token in tokens:
-        try:
-            message = messaging.Message(
-                notification=messaging.Notification(
-                    title=data.title.strip(),
-                    body=data.body.strip(),
-                ),
-                data={
-                    "source": "dobrochesnist",
-                    "type": "admin_push",
-                },
-                token=token,
-            )
-            messaging.send(message)
-            sent += 1
-        except Exception as e:
-            failed += 1
-            errors.append(str(e)[:300])
-
-    return {"ok": True, "sent": sent, "failed": failed, "errors": errors[:5]}
 
 @app.get("/users")
 def list_admin_users(admin: AdminUser = Depends(require_admin), db: Session = Depends(get_db)):
@@ -607,8 +470,6 @@ body{
       <button class="active" data-tab="events"><span class="ico">📅</span>Події</button>
       <button data-tab="reference"><span class="ico">📚</span>Довідка</button>
       <button data-tab="admin"><span class="ico">🛡️</span>Адміністрування</button>
-      <button data-tab="devices"><span class="ico">📱</span>Пристрої</button>
-      <button data-tab="push"><span class="ico">🔔</span>Push</button>
     </nav>
     <div class="side-footer">
       <div class="muted" style="color:rgba(255,255,255,.7)">Швидкі переходи</div>
@@ -649,44 +510,14 @@ body{
       </div>
       <div class="card"><h3>Адміністратори</h3><div class="table-wrap"><table><thead><tr><th>Логін</th><th>Статус</th><th>Останній вхід</th><th>Дії</th></tr></thead><tbody id="users"></tbody></table></div></div>
     </section>
-
-    <section id="tab-devices" class="section">
-      <div class="card">
-        <h3>Зареєстровані пристрої</h3>
-        <p class="muted">Тут мають з’являтися FCM-токени Android-пристроїв після запуску мобільного додатку.</p>
-        <div class="btns" style="margin:12px 0"><button class="green" onclick="loadDevices(true)">Оновити пристрої</button></div>
-        <div class="table-wrap"><table><thead><tr><th>Платформа</th><th>Token</th><th>Версія</th><th>Оновлено</th><th>Дії</th></tr></thead><tbody id="devices"></tbody></table></div>
-      </div>
-    </section>
-
-    <section id="tab-push" class="section">
-      <div class="grid">
-        <div class="card">
-          <h3>Надіслати push-повідомлення</h3>
-          <label>Заголовок</label>
-          <input id="pushTitle" placeholder="Наприклад: Нагадування з доброчесності">
-          <label>Текст повідомлення</label>
-          <textarea id="pushBody" rows="5" placeholder="Введіть текст, який отримають користувачі на Android"></textarea>
-          <div class="btns">
-            <button class="green" onclick="sendPush()">Надіслати всім пристроям</button>
-            <button class="gray" onclick="clearPushForm()">Очистити</button>
-          </div>
-        </div>
-        <div class="card">
-          <h3>Як це працює</h3>
-          <p class="muted">Повідомлення буде надіслано через Firebase Cloud Messaging усім пристроям, які зареєстровані у вкладці “Пристрої”.</p>
-          <p class="muted">Якщо повідомлення не приходить, перевір: чи є токени у таблиці devices, чи додано FIREBASE_SERVICE_ACCOUNT_JSON на Render, і чи встановлено firebase-admin у requirements.txt.</p>
-        </div>
-      </div>
-    </section>
   </main>
 </div>
 <script>
-const titles={events:['Події та нагадування','Створення, редагування та контроль календарних подій.'],reference:['Довідка','Керування довідковими матеріалами для користувачів.'],admin:['Адміністрування','Керування адміністраторами та доступом.'],devices:['Пристрої','Зареєстровані Android-пристрої для push-повідомлень.'],push:['Push-повідомлення','Надсилання повідомлень на всі зареєстровані Android-пристрої.']};
+const titles={events:['Події та нагадування','Створення, редагування та контроль календарних подій.'],reference:['Довідка','Керування довідковими матеріалами для користувачів.'],admin:['Адміністрування','Керування адміністраторами та доступом.']};
 let currentTab='events';
 document.querySelectorAll('.nav button').forEach(btn=>btn.addEventListener('click',()=>switchTab(btn.dataset.tab)));
 function switchTab(tab){currentTab=tab;document.querySelectorAll('.nav button').forEach(b=>b.classList.toggle('active',b.dataset.tab===tab));document.querySelectorAll('.section').forEach(s=>s.classList.remove('active'));document.getElementById('tab-'+tab).classList.add('active');document.getElementById('pageTitle').textContent=titles[tab][0];document.getElementById('pageSub').textContent=titles[tab][1];location.hash=tab;refreshCurrent(false)}
-function refreshCurrent(show=true){if(currentTab==='events')loadEvents(show);if(currentTab==='reference')loadRefs(show);if(currentTab==='admin')loadUsers(show);if(currentTab==='devices')loadDevices(show);if(currentTab==='push')loadDevices(false)}
+function refreshCurrent(show=true){if(currentTab==='events')loadEvents(show);if(currentTab==='reference')loadRefs(show);if(currentTab==='admin')loadUsers(show)}
 function showStatus(t,ok=true){const e=document.getElementById('status');e.className='status '+(ok?'ok':'err');e.textContent=t;e.style.display='block';window.scrollTo({top:0,behavior:'smooth'});setTimeout(()=>e.style.display='none',5000)}
 function escapeHtml(v){return String(v??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'",'&#039;')}
 async function req(u,o={}){const r=await fetch(u,o);if(r.redirected&&r.url.includes('/login'))location.href='/login';return r}
@@ -706,12 +537,8 @@ async function loadUsers(show=false){try{const r=await req('/users');if(!r.ok)th
 async function createUser(){const username=document.getElementById('newUser').value.trim(),password=document.getElementById('newPass').value;if(!username||password.length<8){showStatus('Логін обов’язковий, пароль мінімум 8 символів',false);return}try{const r=await req('/users',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({username,password})});if(!r.ok)throw new Error('HTTP '+r.status+' '+await r.text());document.getElementById('newUser').value='';document.getElementById('newPass').value='';await loadUsers();showStatus('Адміністратора створено')}catch(e){showStatus('Помилка створення адміністратора: '+e.message,false)}}
 async function changeUserPassword(id){const password=prompt('Новий пароль мінімум 8 символів:');if(!password)return;if(password.length<8){showStatus('Пароль мінімум 8 символів',false);return}try{const r=await req(`/users/${id}/password`,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({password})});if(!r.ok)throw new Error('HTTP '+r.status+' '+await r.text());showStatus('Пароль змінено')}catch(e){showStatus('Помилка зміни пароля: '+e.message,false)}}
 async function toggleUser(id){if(!confirm('Змінити статус адміністратора?'))return;try{const r=await req(`/users/${id}/toggle`,{method:'POST'});if(!r.ok)throw new Error('HTTP '+r.status+' '+await r.text());await loadUsers();showStatus('Статус змінено')}catch(e){showStatus('Помилка зміни статусу: '+e.message,false)}}
-async function loadDevices(show=false){try{const r=await req('/devices');if(!r.ok)throw new Error('HTTP '+r.status);const d=await r.json(),tb=document.getElementById('devices');tb.innerHTML='';if(!d.length){tb.innerHTML='<tr><td colspan="5"><div class="empty">Пристроїв поки немає. Відкрий мобільний додаток на телефоні та дозволь сповіщення.</div></td></tr>';return}d.forEach(x=>{const tr=document.createElement('tr');const shortToken=String(x.token||'');tr.innerHTML=`<td><span class="pill">${escapeHtml(x.platform||'android')}</span></td><td><div class="muted" style="max-width:520px;word-break:break-all">${escapeHtml(shortToken)}</div></td><td>${escapeHtml(x.app_version||'—')}</td><td>${escapeHtml(x.updated_at||x.last_seen_at||'—')}</td><td><div class="table-actions"><button class="del">Видалити</button></div></td>`;tr.querySelector('.del').onclick=()=>deleteDevice(x.token);tb.appendChild(tr)});if(show)showStatus('Список пристроїв оновлено')}catch(e){showStatus('Не вдалося завантажити пристрої: '+e.message,false)}}
-async function deleteDevice(token){if(!confirm('Видалити цей пристрій?'))return;try{const r=await req(`/devices/${encodeURIComponent(token)}`,{method:'DELETE'});if(!r.ok&&r.status!==204)throw new Error('HTTP '+r.status+' '+await r.text());await loadDevices();showStatus('Пристрій видалено')}catch(e){showStatus('Помилка видалення пристрою: '+e.message,false)}}
-function clearPushForm(){document.getElementById('pushTitle').value='';document.getElementById('pushBody').value=''}
-async function sendPush(){const title=document.getElementById('pushTitle').value.trim(),body=document.getElementById('pushBody').value.trim();if(!title||!body){showStatus('Заповни заголовок і текст push-повідомлення',false);return}if(!confirm('Надіслати push усім зареєстрованим пристроям?'))return;try{const r=await req('/push/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title,body})});const txt=await r.text();let d={};try{d=JSON.parse(txt)}catch{}if(!r.ok)throw new Error(txt||('HTTP '+r.status));showStatus(`Push надіслано. Успішно: ${d.sent??0}, помилок: ${d.failed??0}`,true)}catch(e){showStatus('Помилка надсилання push: '+e.message,false)}}
-loadEvents();loadRefs();loadUsers();loadDevices();loadStats();
-if(location.hash){const tab=location.hash.replace('#','');if(['events','reference','admin','devices','push'].includes(tab))switchTab(tab)}
+loadEvents();loadRefs();loadUsers();loadStats();
+if(location.hash){const tab=location.hash.replace('#','');if(['events','reference','admin'].includes(tab))switchTab(tab)}
 </script>
 </body>
 </html>
