@@ -1,14 +1,3 @@
-"""
-Доброчесність — бекенд (API + база даних + адмін-панель)
-
-Render:
-- Start Command: uvicorn main:app --host 0.0.0.0 --port $PORT
-- Environment Variables:
-  DATABASE_URL=postgresql://...neon.tech/...?...sslmode=require
-  SECRET_KEY=<секретний_рядок>
-  FIREBASE_SERVICE_ACCOUNT_JSON={...} (опціонально)
-"""
-
 import base64
 import hashlib
 import hmac
