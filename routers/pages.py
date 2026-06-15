@@ -157,10 +157,10 @@ h1{
             <span>Керування подіями, довідником, push-повідомленнями та користувачами.</span>
         </a>
 
-        <a class="action" href="#" onclick="alert('Android-додаток буде доступний після публікації APK або Google Play'); return false;">
-            <div class="icon">🤖</div>
-            <b>Завантажити для Android</b>
-            <span>APK-файл або посилання на Google Play буде додано після збірки додатка.</span>
+        <a class="action"
+           href="https://github.com/Vadmans/app-dobrochesnist/releases/download/v1.0/app-debug.apk">
+           <div class="icon">🤖</div>
+          <b>Завантажити для Android</b>
         </a>
 
         <a class="action" href="#" onclick="alert('iOS-версія буде доступна після публікації в App Store'); return false;">
