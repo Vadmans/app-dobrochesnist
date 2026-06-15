@@ -38,9 +38,145 @@ button:hover{filter:brightness(1.05);transform:translateY(-1px)}
 </style>"""
 
 
-@router.get("/")
+@router.get("/", response_class=HTMLResponse)
 def root():
-    return HTMLResponse('<a href="/admin">Адмін-панель</a>')
+    return HTMLResponse("""
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Доброчесність</title>
+<style>
+*{box-sizing:border-box}
+body{
+    margin:0;
+    min-height:100vh;
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;
+    background:linear-gradient(135deg,#0c2d41,#11405a,#1f7a96);
+    color:#16242e;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    padding:24px;
+}
+.card{
+    width:100%;
+    max-width:920px;
+    background:#fff;
+    border-radius:28px;
+    padding:42px;
+    box-shadow:0 30px 80px rgba(0,0,0,.28);
+}
+.logo{
+    width:78px;
+    height:78px;
+    border-radius:22px;
+    background:linear-gradient(135deg,#1f7a96,#11405a);
+    color:#fff;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    font-size:38px;
+    font-weight:900;
+    margin-bottom:22px;
+}
+h1{
+    margin:0;
+    font-size:34px;
+    color:#0c2d41;
+}
+.subtitle{
+    margin:12px 0 28px;
+    max-width:720px;
+    color:#5f7482;
+    font-size:17px;
+    line-height:1.6;
+}
+.actions{
+    display:grid;
+    grid-template-columns:repeat(3,1fr);
+    gap:16px;
+    margin-top:28px;
+}
+.action{
+    text-decoration:none;
+    border:1px solid #dce8ef;
+    border-radius:18px;
+    padding:22px;
+    background:#f8fbfd;
+    color:#0c2d41;
+    transition:.18s;
+}
+.action:hover{
+    transform:translateY(-3px);
+    box-shadow:0 12px 28px rgba(16,58,84,.16);
+    border-color:#1f7a96;
+}
+.icon{
+    font-size:34px;
+    margin-bottom:12px;
+}
+.action b{
+    display:block;
+    font-size:17px;
+    margin-bottom:6px;
+}
+.action span{
+    font-size:13px;
+    color:#6a7d89;
+    line-height:1.4;
+}
+.note{
+    margin-top:28px;
+    padding-top:20px;
+    border-top:1px solid #e2eaf0;
+    color:#7a8d98;
+    font-size:13px;
+}
+@media(max-width:760px){
+    .card{padding:28px}
+    h1{font-size:28px}
+    .actions{grid-template-columns:1fr}
+}
+</style>
+</head>
+<body>
+<div class="card">
+    <div class="logo">Д</div>
+    <h1>Доброчесність</h1>
+    <p class="subtitle">
+        Мобільний додаток та веб-платформа для інформування працівників
+        про строки, нагадування та вимоги антикорупційного законодавства України.
+    </p>
+
+    <div class="actions">
+        <a class="action" href="/admin">
+            <div class="icon">🔐</div>
+            <b>Вхід в адмін-панель</b>
+            <span>Керування подіями, довідником, push-повідомленнями та користувачами.</span>
+        </a>
+
+        <a class="action" href="#" onclick="alert('Android-додаток буде доступний після публікації APK або Google Play'); return false;">
+            <div class="icon">🤖</div>
+            <b>Завантажити для Android</b>
+            <span>APK-файл або посилання на Google Play буде додано після збірки додатка.</span>
+        </a>
+
+        <a class="action" href="#" onclick="alert('iOS-версія буде доступна після публікації в App Store'); return false;">
+            <div class="icon">🍎</div>
+            <b>Завантажити для iOS</b>
+            <span>Посилання на App Store буде додано після публікації додатка.</span>
+        </a>
+    </div>
+
+    <div class="note">
+        © Доброчесність · Система інформування та нагадувань
+    </div>
+</div>
+</body>
+</html>
+""")
 
 
 @router.get("/health")
