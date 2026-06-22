@@ -86,19 +86,59 @@ class PushLog(Base):
 Base.metadata.create_all(engine)
 
 def ensure_schema():
-    """Мінімальна міграція для старої БД без Alembic."""
+    """Мінімальна міграція для старої БД без Alembic.
+    Важливо для Render/PostgreSQL: create_all НЕ додає колонки в існуючі таблиці.
+    """
     try:
         with engine.begin() as conn:
             if DATABASE_URL.startswith("sqlite"):
-                cols = [r[1] for r in conn.execute(text("PRAGMA table_info(events)"))]
+                def sqlite_cols(table):
+                    try:
+                        return [r[1] for r in conn.execute(text(f"PRAGMA table_info({table})"))]
+                    except Exception:
+                        return []
+                cols = sqlite_cols("events")
                 if "link" not in cols:
                     conn.execute(text("ALTER TABLE events ADD COLUMN link TEXT DEFAULT ''"))
-                pcols = [r[1] for r in conn.execute(text("PRAGMA table_info(push_logs)"))]
+                dcols = sqlite_cols("devices")
+                if dcols:
+                    for col, ddl in [
+                        ("id", "TEXT"), ("platform", "TEXT DEFAULT 'android'"),
+                        ("app_version", "TEXT DEFAULT ''"), ("created_at", "DATETIME"),
+                        ("updated_at", "DATETIME")
+                    ]:
+                        if col not in dcols:
+                            conn.execute(text(f"ALTER TABLE devices ADD COLUMN {col} {ddl}"))
+                pcols = sqlite_cols("push_logs")
                 if "error" not in pcols and pcols:
                     conn.execute(text("ALTER TABLE push_logs ADD COLUMN error TEXT DEFAULT ''"))
             else:
                 conn.execute(text("ALTER TABLE events ADD COLUMN IF NOT EXISTS link TEXT DEFAULT ''"))
+                conn.execute(text("""
+                    CREATE TABLE IF NOT EXISTS devices (
+                        token TEXT PRIMARY KEY,
+                        platform VARCHAR DEFAULT 'android',
+                        app_version VARCHAR DEFAULT '',
+                        created_at TIMESTAMP DEFAULT NOW(),
+                        updated_at TIMESTAMP DEFAULT NOW()
+                    )
+                """))
+                conn.execute(text("ALTER TABLE devices ADD COLUMN IF NOT EXISTS id TEXT"))
+                conn.execute(text("ALTER TABLE devices ADD COLUMN IF NOT EXISTS platform VARCHAR DEFAULT 'android'"))
+                conn.execute(text("ALTER TABLE devices ADD COLUMN IF NOT EXISTS app_version VARCHAR DEFAULT ''"))
+                conn.execute(text("ALTER TABLE devices ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT NOW()"))
+                conn.execute(text("ALTER TABLE devices ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT NOW()"))
+                conn.execute(text("UPDATE devices SET id = 'd' || substr(md5(token), 1, 10) WHERE id IS NULL OR id = ''"))
                 conn.execute(text("ALTER TABLE push_logs ADD COLUMN IF NOT EXISTS error TEXT DEFAULT ''"))
+                conn.execute(text("""
+                    CREATE TABLE IF NOT EXISTS reference_items (
+                        id VARCHAR PRIMARY KEY,
+                        title VARCHAR NOT NULL,
+                        body TEXT DEFAULT '',
+                        link TEXT DEFAULT '',
+                        created_at TIMESTAMP DEFAULT NOW()
+                    )
+                """))
     except Exception as e:
         print("ensure_schema warning:", e)
 ensure_schema()
@@ -236,7 +276,7 @@ def parse_excel_date(value):
         except Exception:
             return None
     s = str(value).strip()
-    for fmt in ("%d.%m.%Y", "%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y"):
+    for fmt in ("%d.%m.%Y", "%d.%m.%y", "%Y-%m-%d", "%d/%m/%Y", "%d/%m/%y", "%d-%m-%Y", "%d-%m-%y"):
         try:
             return datetime.strptime(s, fmt).date()
         except ValueError:
@@ -264,6 +304,8 @@ async def import_events_excel(file: UploadFile = File(...), db: Session = Depend
         ev_date = parse_excel_date(raw_date)
         title = str(raw_title or "").strip()
         link = str(raw_link or "").strip()
+        if idx == 1 and str(raw_date or "").strip().lower() in ("дата", "date"):
+            continue
         if not ev_date or not title:
             if raw_date or raw_title or raw_link:
                 skipped.append({"row": idx, "reason": "немає дати або назви"})
@@ -279,24 +321,63 @@ async def import_events_excel(file: UploadFile = File(...), db: Session = Depend
     return {"ok": True, "created": created, "skipped": skipped[:50], "skipped_count": len(skipped)}
 
 # ---------- Довідник ----------
-@app.get("/reference", response_model=List[ReferenceOut])
-def list_reference(db: Session = Depends(get_db)):
-    return db.query(ReferenceItem).order_by(ReferenceItem.created_at.desc()).all()
+def table_exists(db: Session, name: str) -> bool:
+    try:
+        if DATABASE_URL.startswith("sqlite"):
+            return db.execute(text("SELECT name FROM sqlite_master WHERE type='table' AND name=:n"), {"n": name}).first() is not None
+        return db.execute(text("SELECT to_regclass(:n)"), {"n": name}).scalar() is not None
+    except Exception:
+        return False
 
-@app.post("/reference", response_model=ReferenceOut, status_code=201, dependencies=[Depends(require_admin)])
+def row_to_reference_dict(row, fallback_id_prefix="r"):
+    m = dict(row._mapping) if hasattr(row, "_mapping") else dict(row)
+    rid = str(m.get("id") or m.get("uuid") or m.get("reference_id") or f"{fallback_id_prefix}{uuid.uuid4().hex[:8]}")
+    title = str(m.get("title") or m.get("name") or m.get("question") or m.get("caption") or "Без назви")
+    body = str(m.get("body") or m.get("description") or m.get("text") or m.get("content") or m.get("answer") or "")
+    link = str(m.get("link") or m.get("url") or "")
+    created = m.get("created_at") or m.get("date") or datetime.utcnow()
+    if isinstance(created, str):
+        try:
+            created = datetime.fromisoformat(created.replace("Z", "+00:00"))
+        except Exception:
+            created = datetime.utcnow()
+    created_str = created.isoformat() if hasattr(created, "isoformat") else str(created)
+    return {"id": rid, "title": title, "body": body, "description": body, "link": link, "created_at": created_str}
+
+@app.get("/reference")
+def list_reference(db: Session = Depends(get_db)):
+    items = []
+    try:
+        for x in db.query(ReferenceItem).order_by(ReferenceItem.created_at.desc()).all():
+            items.append({"id": x.id, "title": x.title, "body": x.body, "description": x.body, "link": x.link, "created_at": x.created_at.isoformat()})
+    except Exception:
+        pass
+    for tname in ("referens", "reference", "references"):
+        if table_exists(db, tname):
+            try:
+                rows = db.execute(text(f"SELECT * FROM {tname} LIMIT 500")).fetchall()
+                for r in rows:
+                    d = row_to_reference_dict(r, tname[0])
+                    if not any(x["id"] == d["id"] and x["title"] == d["title"] for x in items):
+                        items.append(d)
+            except Exception as e:
+                print(f"reference compatibility warning {tname}:", e)
+    return items
+
+@app.post("/reference", status_code=201, dependencies=[Depends(require_admin)])
 def create_reference(data: ReferenceIn, db: Session = Depends(get_db)):
     item = ReferenceItem(id=f"r{uuid.uuid4().hex[:8]}", **data.model_dump())
     db.add(item); db.commit(); db.refresh(item)
-    return item
+    return {"id": item.id, "title": item.title, "body": item.body, "description": item.body, "link": item.link, "created_at": item.created_at.isoformat()}
 
-@app.put("/reference/{item_id}", response_model=ReferenceOut, dependencies=[Depends(require_admin)])
+@app.put("/reference/{item_id}", dependencies=[Depends(require_admin)])
 def update_reference(item_id: str, data: ReferenceIn, db: Session = Depends(get_db)):
     item = db.get(ReferenceItem, item_id)
     if not item:
         raise HTTPException(404, "Запис не знайдено")
     item.title = data.title; item.body = data.body; item.link = data.link
     db.commit(); db.refresh(item)
-    return item
+    return {"id": item.id, "title": item.title, "body": item.body, "description": item.body, "link": item.link, "created_at": item.created_at.isoformat()}
 
 @app.delete("/reference/{item_id}", status_code=204, dependencies=[Depends(require_admin)])
 def delete_reference(item_id: str, db: Session = Depends(get_db)):
@@ -306,25 +387,47 @@ def delete_reference(item_id: str, db: Session = Depends(get_db)):
     db.delete(item); db.commit()
 
 # ---------- Пристрої / Push ----------
+def fetch_device_rows(db: Session):
+    try:
+        if DATABASE_URL.startswith("sqlite"):
+            q = "SELECT token, COALESCE(id, '') AS id, COALESCE(platform, 'android') AS platform, COALESCE(app_version, '') AS app_version, COALESCE(updated_at, created_at) AS updated_at FROM devices WHERE token IS NOT NULL AND token <> ''"
+        else:
+            q = "SELECT token, COALESCE(id, '') AS id, COALESCE(platform, 'android') AS platform, COALESCE(app_version, '') AS app_version, COALESCE(updated_at, created_at, NOW()) AS updated_at FROM devices WHERE token IS NOT NULL AND token <> ''"
+        rows = db.execute(text(q)).fetchall()
+        return [dict(r._mapping) for r in rows]
+    except Exception as e:
+        print("fetch_device_rows warning:", e)
+        return []
+
 @app.post("/devices/register")
 def register_device(data: DeviceIn, db: Session = Depends(get_db)):
     token = data.token.strip()
     if not token:
         raise HTTPException(400, "Порожній token")
-    dev = db.query(Device).filter(Device.token == token).first()
-    if not dev:
-        dev = Device(id=f"d{uuid.uuid4().hex[:10]}", token=token)
-        db.add(dev)
-    dev.platform = data.platform
-    dev.app_version = data.app_version
-    dev.updated_at = datetime.utcnow()
-    db.commit()
-    return {"ok": True, "device_id": dev.id}
+    did = f"d{uuid.uuid4().hex[:10]}"
+    try:
+        if DATABASE_URL.startswith("sqlite"):
+            db.execute(text("""
+                INSERT INTO devices (id, token, platform, app_version, created_at, updated_at)
+                VALUES (:id, :token, :platform, :app_version, :now, :now)
+                ON CONFLICT(token) DO UPDATE SET platform=:platform, app_version=:app_version, updated_at=:now
+            """), {"id": did, "token": token, "platform": data.platform, "app_version": data.app_version, "now": datetime.utcnow()})
+        else:
+            db.execute(text("""
+                INSERT INTO devices (id, token, platform, app_version, created_at, updated_at)
+                VALUES (:id, :token, :platform, :app_version, NOW(), NOW())
+                ON CONFLICT(token) DO UPDATE SET platform=EXCLUDED.platform, app_version=EXCLUDED.app_version, updated_at=NOW(), id=COALESCE(devices.id, EXCLUDED.id)
+            """), {"id": did, "token": token, "platform": data.platform, "app_version": data.app_version})
+        db.commit()
+        return {"ok": True, "device_id": did}
+    except Exception as e:
+        db.rollback()
+        return JSONResponse(status_code=200, content={"ok": False, "error": str(e)})
 
 @app.get("/devices", dependencies=[Depends(require_admin)])
 def list_devices(db: Session = Depends(get_db)):
-    items = db.query(Device).order_by(Device.updated_at.desc()).limit(200).all()
-    return [{"id": d.id, "platform": d.platform, "app_version": d.app_version, "updated_at": d.updated_at.isoformat(), "token_start": d.token[:18]} for d in items]
+    items = fetch_device_rows(db)[:200]
+    return [{"id": d.get("id") or "", "platform": d.get("platform") or "", "app_version": d.get("app_version") or "", "updated_at": str(d.get("updated_at") or ""), "token_start": (d.get("token") or "")[:18]} for d in items]
 
 def send_push_to_tokens(tokens: List[str], title: str, body: str):
     service_json = os.getenv("FIREBASE_SERVICE_ACCOUNT_JSON", "").strip()
@@ -359,8 +462,8 @@ def send_push_to_tokens(tokens: List[str], title: str, body: str):
 @app.post("/push/send", dependencies=[Depends(require_admin)])
 def push_send(data: PushIn, db: Session = Depends(get_db)):
     try:
-        devices = db.query(Device).all()
-        tokens = [d.token for d in devices if d.token]
+        devices = fetch_device_rows(db)
+        tokens = [d.get("token") for d in devices if d.get("token")]
         result = send_push_to_tokens(tokens, data.title, data.body)
         log = PushLog(
             id=f"p{uuid.uuid4().hex[:8]}", title=data.title, body=data.body,
@@ -378,7 +481,7 @@ def push_send(data: PushIn, db: Session = Depends(get_db)):
 def push_status(db: Session = Depends(get_db)):
     return {
         "firebase_env": bool(os.getenv("FIREBASE_SERVICE_ACCOUNT_JSON", "").strip()),
-        "devices": db.query(Device).count(),
+        "devices": len(fetch_device_rows(db)),
         "logs": db.query(PushLog).count(),
     }
 
@@ -435,9 +538,12 @@ def stats(db: Session = Depends(get_db)):
     try:
         events = db.query(Event).all()
         chat_new = db.query(ChatMessage).filter(ChatMessage.status == "new").count()
-        devices = db.query(Device).count()
-        refs = db.query(ReferenceItem).count()
-        push_logs = db.query(PushLog).count()
+        devices = len(fetch_device_rows(db))
+        refs = len(list_reference(db))
+        try:
+            push_logs = db.query(PushLog).count()
+        except Exception:
+            push_logs = 0
         return {
             "ok": True,
             "events": len(events),
