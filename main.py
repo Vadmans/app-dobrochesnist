@@ -13,7 +13,9 @@ import os
 import uuid
 import secrets
 import json
+import asyncio
 from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
 from typing import List, Optional
 
 from fastapi import FastAPI, HTTPException, Depends, Header, UploadFile, File
@@ -83,6 +85,18 @@ class PushLog(Base):
     configured: Mapped[int] = mapped_column(Integer, default=0)
     error: Mapped[str] = mapped_column(Text, default="")
 
+class EventReminderLog(Base):
+    __tablename__ = "event_reminder_logs"
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    event_id: Mapped[str] = mapped_column(String, index=True)
+    event_date: Mapped[date] = mapped_column(Date, index=True)
+    reminder_date: Mapped[date] = mapped_column(Date, index=True)
+    reminder_type: Mapped[str] = mapped_column(String, default="event_day_09")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    sent: Mapped[int] = mapped_column(Integer, default=0)
+    failed: Mapped[int] = mapped_column(Integer, default=0)
+    error: Mapped[str] = mapped_column(Text, default="")
+
 Base.metadata.create_all(engine)
 
 def ensure_schema():
@@ -112,6 +126,19 @@ def ensure_schema():
                 pcols = sqlite_cols("push_logs")
                 if "error" not in pcols and pcols:
                     conn.execute(text("ALTER TABLE push_logs ADD COLUMN error TEXT DEFAULT ''"))
+                conn.execute(text("""
+                    CREATE TABLE IF NOT EXISTS event_reminder_logs (
+                        id TEXT PRIMARY KEY,
+                        event_id TEXT,
+                        event_date DATE,
+                        reminder_date DATE,
+                        reminder_type TEXT DEFAULT 'event_day_09',
+                        created_at DATETIME,
+                        sent INTEGER DEFAULT 0,
+                        failed INTEGER DEFAULT 0,
+                        error TEXT DEFAULT ''
+                    )
+                """))
             else:
                 conn.execute(text("ALTER TABLE events ADD COLUMN IF NOT EXISTS link TEXT DEFAULT ''"))
                 conn.execute(text("""
@@ -137,6 +164,19 @@ def ensure_schema():
                         body TEXT DEFAULT '',
                         link TEXT DEFAULT '',
                         created_at TIMESTAMP DEFAULT NOW()
+                    )
+                """))
+                conn.execute(text("""
+                    CREATE TABLE IF NOT EXISTS event_reminder_logs (
+                        id VARCHAR PRIMARY KEY,
+                        event_id VARCHAR,
+                        event_date DATE,
+                        reminder_date DATE,
+                        reminder_type VARCHAR DEFAULT 'event_day_09',
+                        created_at TIMESTAMP DEFAULT NOW(),
+                        sent INTEGER DEFAULT 0,
+                        failed INTEGER DEFAULT 0,
+                        error TEXT DEFAULT ''
                     )
                 """))
     except Exception as e:
@@ -565,6 +605,111 @@ def push_status(db: Session = Depends(get_db)):
         "logs": db.query(PushLog).count(),
     }
 
+# ---------- Автоматичні нагадування про події о 09:00 ----------
+KYIV_TZ = ZoneInfo("Europe/Kyiv")
+REMINDER_HOUR = int(os.getenv("EVENT_REMINDER_HOUR", "9"))
+REMINDER_MINUTE = int(os.getenv("EVENT_REMINDER_MINUTE", "0"))
+
+def _send_event_day_reminders(db: Session):
+    now = datetime.now(KYIV_TZ)
+    today = now.date()
+    if (now.hour, now.minute) < (REMINDER_HOUR, REMINDER_MINUTE):
+        return {"ok": True, "message": "Ще не час", "today": str(today), "time": now.strftime("%H:%M")}
+
+    events = db.query(Event).filter(Event.date == today).order_by(Event.title).all()
+    if not events:
+        return {"ok": True, "message": "На сьогодні подій немає", "today": str(today), "checked": 0, "sent_events": 0}
+
+    devices = fetch_device_rows(db)
+    tokens = [d.get("token") for d in devices if d.get("token")]
+    results = []
+    sent_events = 0
+
+    for ev in events:
+        already = db.query(EventReminderLog).filter(
+            EventReminderLog.event_id == ev.id,
+            EventReminderLog.reminder_date == today,
+            EventReminderLog.reminder_type == "event_day_09"
+        ).first()
+        if already:
+            results.append({"event_id": ev.id, "title": ev.title, "skipped": True, "reason": "вже надсилалось"})
+            continue
+
+        body_parts = ["Сьогодні настає строк події."]
+        if ev.description:
+            body_parts.append(ev.description[:180])
+        if ev.link:
+            body_parts.append(ev.link)
+        body = "\n".join(body_parts)
+
+        result = send_push_to_tokens(tokens, "Нагадування: " + ev.title, body)
+        log = EventReminderLog(
+            id=f"r{uuid.uuid4().hex[:10]}",
+            event_id=ev.id,
+            event_date=ev.date,
+            reminder_date=today,
+            reminder_type="event_day_09",
+            sent=result.get("sent", 0),
+            failed=result.get("failed", 0),
+            error=result.get("error", "") or "",
+        )
+        db.add(log)
+        db.add(PushLog(
+            id=f"p{uuid.uuid4().hex[:8]}",
+            title="Нагадування: " + ev.title,
+            body=body,
+            sent=result.get("sent", 0),
+            failed=result.get("failed", 0),
+            configured=1 if result.get("configured") else 0,
+            error=result.get("error", "") or ""
+        ))
+        db.commit()
+        sent_events += 1
+        results.append({"event_id": ev.id, "title": ev.title, **result})
+
+    return {"ok": True, "today": str(today), "time": now.strftime("%H:%M"), "devices": len(tokens), "checked": len(events), "sent_events": sent_events, "results": results}
+
+@app.post("/events/reminders/run", dependencies=[Depends(require_admin)])
+def run_event_reminders(db: Session = Depends(get_db)):
+    """Ручний запуск перевірки нагадувань. Можна викликати з cron о 09:00."""
+    return _send_event_day_reminders(db)
+
+@app.get("/events/reminders/status", dependencies=[Depends(require_admin)])
+def event_reminders_status(db: Session = Depends(get_db)):
+    now = datetime.now(KYIV_TZ)
+    today = now.date()
+    todays_events = db.query(Event).filter(Event.date == today).count()
+    sent_today = db.query(EventReminderLog).filter(EventReminderLog.reminder_date == today).count()
+    return {
+        "ok": True,
+        "timezone": "Europe/Kyiv",
+        "server_time_kyiv": now.strftime("%Y-%m-%d %H:%M:%S"),
+        "send_after": f"{REMINDER_HOUR:02d}:{REMINDER_MINUTE:02d}",
+        "todays_events": todays_events,
+        "sent_today": sent_today,
+        "devices": len(fetch_device_rows(db)),
+    }
+
+async def event_reminder_worker():
+    # Працює, доки Render-сервіс не спить. Для гарантованого запуску о 09:00 краще додатково поставити cron на /events/reminders/run.
+    while True:
+        try:
+            now = datetime.now(KYIV_TZ)
+            if now.hour == REMINDER_HOUR and now.minute in (REMINDER_MINUTE, REMINDER_MINUTE + 1):
+                db = SessionLocal()
+                try:
+                    _send_event_day_reminders(db)
+                finally:
+                    db.close()
+            await asyncio.sleep(60)
+        except Exception as e:
+            print("event_reminder_worker warning:", e)
+            await asyncio.sleep(60)
+
+@app.on_event("startup")
+async def start_event_reminder_worker():
+    asyncio.create_task(event_reminder_worker())
+
 # ---------- Чат ----------
 @app.post("/chat")
 def chat_create(data: ChatIn, db: Session = Depends(get_db)):
@@ -673,7 +818,7 @@ def admin_panel():
 <section id="events" class="tab hidden"><div class="card"><div class="toolbar" style="justify-content:space-between"><h2>Події</h2><div class="actions"><button class="btn" id="btnCreate">+ Додати подію</button><label class="btn gold" style="margin:0;cursor:pointer">Імпортувати Excel<input id="excelFile" type="file" accept=".xlsx,.xlsm" style="display:none"></label><button class="btn gold" id="btnExcel">Завантажити</button><button class="btn gray" id="reloadEvents">Оновити</button></div></div><div class="excelbox"><div class="muted">Excel формат: A — дата, B — подія, C — посилання.</div><div id="excelResult" class="muted"></div></div></div><div class="card"><div class="toolbar"><input id="search" placeholder="Пошук події" style="max-width:330px"><select id="filterCat" style="max-width:220px"><option value="">Усі категорії</option><option value="declaration">Декларування</option><option value="conflict">Конфлікт інтересів</option><option value="gifts">Подарунки</option><option value="notice">Повідомлення</option><option value="training">Навчання</option><option value="restriction">Обмеження</option></select><select id="sort" style="max-width:220px"><option value="date">За датою</option><option value="views">За переглядами</option><option value="title">За назвою</option></select></div><table><thead><tr><th>Дата</th><th>Назва</th><th>Категорія</th><th>Перегляди</th><th>Дії</th></tr></thead><tbody id="eventsBody"></tbody></table></div></section>
 <section id="reference" class="tab hidden"><div class="card"><h2>Довідник</h2><div class="formgrid"><div><label>Назва</label><input id="refTitle" placeholder="Назва довідкового матеріалу"></div><div><label>Посилання</label><input id="refLink" placeholder="https://..."></div><div style="align-self:end"><button class="btn" id="saveRef">Додати</button></div></div><label>Текст</label><textarea id="refBody" rows="4" placeholder="Короткий опис або інструкція"></textarea></div><div class="card"><div class="toolbar" style="justify-content:space-between"><h2>Матеріали</h2><button class="btn gray" id="reloadRef">Оновити</button></div><div id="refList"></div></div></section>
 <section id="chat" class="tab hidden"><div class="card"><div class="toolbar" style="justify-content:space-between"><h2>Чат користувачів</h2><button class="btn gray" id="reloadChat">Оновити</button></div><div id="chatList"></div></div></section>
-<section id="push" class="tab hidden"><div class="card"><h2>Push-повідомлення</h2><label>Заголовок</label><input id="pushTitle" placeholder="Наприклад: Нагадування"><label>Текст</label><textarea id="pushBody" rows="4" placeholder="Текст повідомлення"></textarea><div class="actions"><button class="btn green" id="btnPush">Надіслати push</button><button class="btn gray" id="btnPushStatus">Перевірити статус</button></div><div id="pushResult" class="pushdiag muted" style="margin-top:12px"></div></div></section>
+<section id="push" class="tab hidden"><div class="card"><h2>Push-повідомлення</h2><label>Заголовок</label><input id="pushTitle" placeholder="Наприклад: Нагадування"><label>Текст</label><textarea id="pushBody" rows="4" placeholder="Текст повідомлення"></textarea><div class="actions"><button class="btn green" id="btnPush">Надіслати push</button><button class="btn gray" id="btnPushStatus">Перевірити статус</button><button class="btn gold" id="btnReminderStatus">Статус нагадувань</button><button class="btn orange" id="btnRunReminders">Запустити нагадування сьогодні</button></div><div class="muted" style="margin-top:10px">Автоматичне нагадування: щодня після 09:00 за Києвом для подій із сьогоднішньою датою.</div><div id="pushResult" class="pushdiag muted" style="margin-top:12px"></div></div></section>
 <section id="settings" class="tab hidden"><div class="card"><h2>Налаштування</h2><label>ADMIN_TOKEN</label><input id="token" type="password" placeholder="Встав ADMIN_TOKEN"><div class="actions"><button class="btn" id="saveToken">Запам'ятати токен</button><button class="btn gray" id="clearToken">Очистити</button></div></div></section>
 </main></div>
 <div id="modal" class="modal"><div class="modalbox"><div class="toolbar" style="justify-content:space-between"><h2 id="modalTitle">Нова подія</h2><button class="btn gray" id="closeModal">Закрити</button></div><input type="hidden" id="eventId"><div class="formgrid"><div><label>Назва</label><input id="title"></div><div><label>Дата</label><input id="date" type="date"></div><div><label>Категорія</label><select id="cat"><option value="declaration">Декларування</option><option value="conflict">Конфлікт інтересів</option><option value="gifts">Подарунки</option><option value="notice">Повідомлення</option><option value="training">Навчання</option><option value="restriction">Обмеження</option></select></div></div><label>Повторюваність</label><input id="recur"><label>Опис</label><textarea id="description" rows="3"></textarea><label>Інструкція</label><textarea id="instruction" rows="3"></textarea><label>Посилання</label><input id="link"><label>Аудиторія</label><input id="audience" value="Усі працівники"><label>Нагадування, днів до події</label><input id="reminders" value="30,10,3,0"><div class="actions" style="margin-top:14px"><button class="btn green" id="saveEvent">Зберегти</button></div></div></div>
@@ -687,7 +832,9 @@ async function save(){if(!tok()){msg('Спершу вкажи ADMIN_TOKEN',false
 async function loadReference(){try{let r=await fetch('/reference');allRefs=await readJson(r);let box=$('refList');box.innerHTML='';if(!allRefs.length){box.innerHTML='<div class="muted">Матеріалів поки немає</div>';return}allRefs.forEach(x=>{let d=document.createElement('div');d.className='refitem';let b=document.createElement('b');b.textContent=x.title;let p=document.createElement('div');p.textContent=x.body||'';let l=document.createElement('div');l.className='muted';l.textContent=x.link||'';let a=document.createElement('div');a.className='actions';let delb=document.createElement('button');delb.className='btn red';delb.textContent='Видалити';delb.onclick=()=>deleteRef(x.id);a.append(delb);d.append(b,p,l,a);box.append(d)})}catch(e){msg('Помилка довідника: '+e.message,false)}}async function saveRef(){if(!tok()){msg('Спершу вкажи ADMIN_TOKEN',false);return}let payload={title:$('refTitle').value.trim(),body:$('refBody').value.trim(),link:$('refLink').value.trim()};if(!payload.title){msg('Вкажи назву довідника',false);return}let r=await fetch('/reference',{method:'POST',headers:h({'Content-Type':'application/json'}),body:JSON.stringify(payload)});if(r.ok){$('refTitle').value='';$('refBody').value='';$('refLink').value='';loadReference();loadStats();msg('Додано в довідник')}else msg('Помилка довідника',false)}async function deleteRef(id){if(!confirm('Видалити запис?'))return;let r=await fetch(`/reference/${id}`,{method:'DELETE',headers:h()});if(r.ok||r.status===204){loadReference();loadStats();msg('Запис видалено')}else msg('Помилка видалення',false)}
 async function loadChat(){if(!tok()){msg('Спершу вкажи ADMIN_TOKEN',false);return}try{let r=await fetch('/admin/chat',{headers:h()});allChat=await readJson(r);let box=$('chatList');box.innerHTML='';if(!allChat.length){box.innerHTML='<div class="muted">Повідомлень поки немає</div>';return}allChat.forEach(m=>{let d=document.createElement('div');d.className='chatitem';d.innerHTML='<div class="muted"></div><div class="chatq"></div><textarea rows="3" placeholder="Відповідь"></textarea><div class="actions"><button class="btn green">Відповісти</button><button class="btn red">Видалити</button></div>';d.querySelector('.muted').textContent=m.client_id+' • '+new Date(m.created_at).toLocaleString('uk-UA');d.querySelector('.chatq').textContent=m.question;if(m.answer){let a=document.createElement('div');a.className='chata';a.textContent='Відповідь: '+m.answer;d.insertBefore(a,d.querySelector('textarea'));d.querySelector('textarea').value=m.answer}d.querySelector('.green').onclick=()=>answerChat(m.id,d.querySelector('textarea').value);d.querySelector('.red').onclick=()=>deleteChat(m.id);box.append(d)})}catch(e){msg('Помилка чату: '+e.message,false)}}async function answerChat(id,answer){let r=await fetch(`/admin/chat/${id}/answer`,{method:'POST',headers:h({'Content-Type':'application/json'}),body:JSON.stringify({answer})});if(r.ok){msg('Відповідь збережено');loadChat();loadStats()}else msg('Помилка відповіді',false)}async function deleteChat(id){if(!confirm('Видалити повідомлення?'))return;let r=await fetch(`/admin/chat/${id}`,{method:'DELETE',headers:h()});if(r.ok||r.status===204){msg('Чат видалено');loadChat();loadStats()}else msg('Помилка видалення',false)}
 async function sendPush(){if(!tok()){msg('Спершу вкажи ADMIN_TOKEN',false);return}let title=$('pushTitle').value.trim(),body=$('pushBody').value.trim();if(!title||!body){msg('Заповни заголовок і текст',false);return}try{let r=await fetch('/push/send',{method:'POST',headers:h({'Content-Type':'application/json'}),body:JSON.stringify({title,body})});let j=await readJson(r);$('pushResult').textContent=JSON.stringify(j,null,2);msg(j.configured&&j.sent>0?'Push відправлено':'Push не відправлено: '+(j.error||'дивись статус'),j.configured&&j.sent>0)}catch(e){msg('Помилка push: '+e.message,false)}}async function pushStatus(){if(!tok())return;try{let r=await fetch('/push/status',{headers:h()}),j=await readJson(r);$('pushResult').textContent=JSON.stringify(j,null,2)}catch(e){$('pushResult').textContent='Помилка статусу: '+e.message}}
-$('btnCreate').onclick=()=>{clearForm();openM(false)};$('closeModal').onclick=closeM;$('modal').onclick=e=>{if(e.target.id==='modal')closeM()};$('saveEvent').onclick=save;$('reloadEvents').onclick=$('reloadDash').onclick=()=>{loadEvents();loadStats()};['search','filterCat','sort'].forEach(id=>$(id).oninput=renderEvents);$('saveToken').onclick=()=>{sessionStorage.setItem('adminToken',tok());msg('Токен збережено');loadStats();pushStatus()};$('clearToken').onclick=()=>{sessionStorage.removeItem('adminToken');$('token').value='';msg('Токен очищено')};$('btnExcel').onclick=uploadExcel;$('reloadChat').onclick=loadChat;$('saveRef').onclick=saveRef;$('reloadRef').onclick=loadReference;$('btnPush').onclick=sendPush;$('btnPushStatus').onclick=pushStatus;loadEvents();loadStats();loadReference();
+async function reminderStatus(){if(!tok()){msg('Спершу вкажи ADMIN_TOKEN',false);return}try{let r=await fetch('/events/reminders/status',{headers:h()}),j=await readJson(r);$('pushResult').textContent=JSON.stringify(j,null,2)}catch(e){$('pushResult').textContent='Помилка нагадувань: '+e.message}}
+async function runReminders(){if(!tok()){msg('Спершу вкажи ADMIN_TOKEN',false);return}try{let r=await fetch('/events/reminders/run',{method:'POST',headers:h()}),j=await readJson(r);$('pushResult').textContent=JSON.stringify(j,null,2);msg(j.sent_events>0?'Нагадування запущено':'Нагадування перевірено')}catch(e){msg('Помилка нагадувань: '+e.message,false)}}
+$('btnCreate').onclick=()=>{clearForm();openM(false)};$('closeModal').onclick=closeM;$('modal').onclick=e=>{if(e.target.id==='modal')closeM()};$('saveEvent').onclick=save;$('reloadEvents').onclick=$('reloadDash').onclick=()=>{loadEvents();loadStats()};['search','filterCat','sort'].forEach(id=>$(id).oninput=renderEvents);$('saveToken').onclick=()=>{sessionStorage.setItem('adminToken',tok());msg('Токен збережено');loadStats();pushStatus()};$('clearToken').onclick=()=>{sessionStorage.removeItem('adminToken');$('token').value='';msg('Токен очищено')};$('btnExcel').onclick=uploadExcel;$('reloadChat').onclick=loadChat;$('saveRef').onclick=saveRef;$('reloadRef').onclick=loadReference;$('btnPush').onclick=sendPush;$('btnPushStatus').onclick=pushStatus;$('btnReminderStatus').onclick=reminderStatus;$('btnRunReminders').onclick=runReminders;loadEvents();loadStats();loadReference();
 </script></body></html>
 '''
 
