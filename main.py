@@ -392,6 +392,14 @@ $("btnCreate").onclick=$("btnCreateTop").onclick=()=>{clearForm();openM(false)};
 </script></body></html>
 """
 
+@app.post("/chat/question")
+def chat_question(data: ChatIn, db: Session = Depends(get_db)):
+    return chat_create(data, db)
+
+@app.get("/chat/messages")
+def chat_messages(client_id: str, db: Session = Depends(get_db)):
+    return chat_for_client(client_id, db)
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main_with_chat_push_excel:app", host="0.0.0.0", port=8000, reload=True)
