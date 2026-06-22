@@ -262,7 +262,19 @@ def delete_event(event_id: str, db: Session = Depends(get_db)):
         raise HTTPException(404, "Подію не знайдено")
     db.delete(ev); db.commit()
 
+def normalize_excel_text(value):
+    """Чистить значення з Excel від пробілів, переносів і невидимих символів."""
+    if value is None:
+        return ""
+    s = str(value).replace("\xa0", " ").replace("\u200b", "").strip()
+    return " ".join(s.split())
+
+
 def parse_excel_date(value):
+    """Підтримка дат Excel: дата-комірка, serial number, 22.06.2026, 22.06.26,
+    2026-06-22, 22/06/2026, 22.06 без року. Якщо року немає — ставимо поточний,
+    а якщо дата вже минула — наступний рік.
+    """
     if value is None or value == "":
         return None
     if isinstance(value, datetime):
@@ -275,13 +287,40 @@ def parse_excel_date(value):
             return from_excel(value).date()
         except Exception:
             return None
-    s = str(value).strip()
-    for fmt in ("%d.%m.%Y", "%d.%m.%y", "%Y-%m-%d", "%d/%m/%Y", "%d/%m/%y", "%d-%m-%Y", "%d-%m-%y"):
+
+    s = normalize_excel_text(value)
+    if not s:
+        return None
+
+    # прибираємо службові слова/символи: "22.06.2026 р.", "до 22.06.2026"
+    low = s.lower().replace("р.", "").replace("року", "").replace("до ", "").strip()
+    # якщо є час після дати — відкидаємо
+    low = low.split(" ")[0]
+
+    fmts = (
+        "%d.%m.%Y", "%d.%m.%y", "%Y-%m-%d", "%d/%m/%Y", "%d/%m/%y",
+        "%d-%m-%Y", "%d-%m-%y", "%Y/%m/%d", "%Y.%m.%d"
+    )
+    for fmt in fmts:
         try:
-            return datetime.strptime(s, fmt).date()
+            return datetime.strptime(low, fmt).date()
         except ValueError:
             pass
+
+    # формат без року: 22.06 або 22/06
+    for sep in (".", "/", "-"):
+        parts = low.split(sep)
+        if len(parts) == 2 and all(x.isdigit() for x in parts):
+            try:
+                d = int(parts[0]); m = int(parts[1]); y = date.today().year
+                candidate = date(y, m, d)
+                if candidate < date.today():
+                    candidate = date(y + 1, m, d)
+                return candidate
+            except Exception:
+                return None
     return None
+
 
 @app.post("/events/import-excel", dependencies=[Depends(require_admin)])
 async def import_events_excel(file: UploadFile = File(...), db: Session = Depends(get_db)):
@@ -296,29 +335,70 @@ async def import_events_excel(file: UploadFile = File(...), db: Session = Depend
         ws = wb.active
     except Exception as e:
         raise HTTPException(400, f"Не вдалося прочитати Excel: {e}")
-    created, skipped = 0, []
+
+    created, skipped, created_items = 0, [], []
     for idx, row in enumerate(ws.iter_rows(min_row=1, values_only=True), start=1):
         raw_date = row[0] if len(row) > 0 else None
         raw_title = row[1] if len(row) > 1 else None
         raw_link = row[2] if len(row) > 2 else ""
+
+        # пропускаємо заголовок
+        if idx == 1:
+            h1 = normalize_excel_text(raw_date).lower()
+            h2 = normalize_excel_text(raw_title).lower()
+            if h1 in ("дата", "date", "строк") or h2 in ("подія", "назва", "event", "title"):
+                continue
+
         ev_date = parse_excel_date(raw_date)
-        title = str(raw_title or "").strip()
-        link = str(raw_link or "").strip()
-        if idx == 1 and str(raw_date or "").strip().lower() in ("дата", "date"):
-            continue
+        title = normalize_excel_text(raw_title)
+        link = normalize_excel_text(raw_link)
+
         if not ev_date or not title:
             if raw_date or raw_title or raw_link:
-                skipped.append({"row": idx, "reason": "немає дати або назви"})
+                skipped.append({
+                    "row": idx,
+                    "date": normalize_excel_text(raw_date),
+                    "title": normalize_excel_text(raw_title),
+                    "reason": "не розпізнано дату або порожня назва"
+                })
             continue
-        # Важливо: cat="notice", бо мобільний додаток краще працює з існуючими категоріями.
+
         ev = Event(
-            id=f"e{uuid.uuid4().hex[:8]}", cat="notice", title=title, date=ev_date,
-            recur="", description=(f"Посилання: {link}" if link else ""), instruction=link,
-            link=link, audience="Усі працівники", reminders=[30, 10, 3, 0], views=0
+            id=f"e{uuid.uuid4().hex[:8]}",
+            cat="notice",
+            title=title,
+            date=ev_date,
+            recur="",
+            description=(f"Посилання: {link}" if link else ""),
+            instruction=("Відкрити посилання" if link else ""),
+            link=link,
+            audience="Усі працівники",
+            reminders=[30, 10, 3, 0],
+            views=0,
         )
-        db.add(ev); created += 1
+        db.add(ev)
+        created += 1
+        created_items.append({"row": idx, "id": ev.id, "date": ev_date.isoformat(), "title": title, "link": link})
+
     db.commit()
-    return {"ok": True, "created": created, "skipped": skipped[:50], "skipped_count": len(skipped)}
+
+    # Контрольна перевірка: скільки подій реально є в БД після імпорту.
+    total_events = db.query(Event).count()
+    return {
+        "ok": True,
+        "created": created,
+        "created_items": created_items[:30],
+        "skipped": skipped[:50],
+        "skipped_count": len(skipped),
+        "total_events": total_events,
+        "message": f"Імпортовано {created} подій. Усього в базі: {total_events}."
+    }
+
+@app.get("/events/import-check", dependencies=[Depends(require_admin)])
+def import_check(db: Session = Depends(get_db)):
+    """Швидка перевірка: останні 30 подій, які бачить /events."""
+    rows = db.query(Event).order_by(Event.date.desc()).limit(30).all()
+    return [{"id": e.id, "date": e.date.isoformat(), "title": e.title, "cat": e.cat, "link": e.link} for e in rows]
 
 # ---------- Довідник ----------
 def table_exists(db: Session, name: str) -> bool:
@@ -603,7 +683,7 @@ document.querySelectorAll('.nav button').forEach(b=>b.onclick=()=>{document.quer
 function openM(edit=false){$('modalTitle').textContent=edit?'Редагування події':'Нова подія';$('modal').classList.add('open')}function closeM(){$('modal').classList.remove('open')}function clearForm(){['eventId','title','date','recur','description','instruction','link'].forEach(id=>$(id).value='');$('cat').value='declaration';$('audience').value='Усі працівники';$('reminders').value='30,10,3,0'}function edit(ev){$('eventId').value=ev.id;$('title').value=ev.title||'';$('date').value=ev.date||'';$('cat').value=ev.cat||'notice';$('recur').value=ev.recur||'';$('description').value=ev.description||'';$('instruction').value=ev.instruction||'';$('link').value=ev.link||'';$('audience').value=ev.audience||'Усі працівники';$('reminders').value=(ev.reminders||[30,10,3,0]).join(',');openM(true)}
 function filtered(){let d=[...allEvents],q=$('search').value.toLowerCase().trim(),c=$('filterCat').value;if(c)d=d.filter(e=>e.cat===c);if(q)d=d.filter(e=>[e.title,e.description,e.instruction,e.link,catNames[e.cat]].join(' ').toLowerCase().includes(q));let s=$('sort').value;d.sort((a,b)=>s==='views'?(b.views||0)-(a.views||0):s==='title'?(a.title||'').localeCompare(b.title||'','uk'):(a.date||'').localeCompare(b.date||''));return d}function renderDash(){let views=allEvents.reduce((n,e)=>n+(e.views||0),0),cats=new Set(allEvents.map(e=>e.cat)).size;$('stEvents').textContent=allEvents.length;$('stViews').textContent=views;$('stCats').textContent=cats;let rows=allEvents.map(e=>({...e,d:days(e.date)})).filter(e=>e.d>=0).sort((a,b)=>a.d-b.d).slice(0,8),body=$('nearestBody');body.innerHTML='';if(!rows.length){body.innerHTML='<tr><td colspan="4">Майбутніх подій немає</td></tr>';return}rows.forEach(e=>{let tr=document.createElement('tr');tr.append(td(fmt(e.date)));let name=td(e.title);if(e.link){let m=document.createElement('div');m.className='muted';m.textContent=e.link;name.append(m)}tr.append(name);let cat=document.createElement('td'),p=document.createElement('span');p.className='pill';p.textContent=catNames[e.cat]||e.cat;cat.append(p);tr.append(cat);let st=document.createElement('td'),s=document.createElement('span');s.className='pill '+(e.d===0?'today':e.d<=7?'soon':'');s.textContent=e.d===0?'Сьогодні':'через '+e.d+' дн.';st.append(s);tr.append(st);body.append(tr)})}function renderEvents(){let body=$('eventsBody');body.innerHTML='';let data=filtered();if(!data.length){body.innerHTML='<tr><td colspan="5">Подій не знайдено</td></tr>';return}data.forEach(e=>{let tr=document.createElement('tr');tr.append(td(fmt(e.date)));let name=td(e.title);[e.description,e.link].filter(Boolean).forEach(t=>{let m=document.createElement('div');m.className='muted';m.textContent=t;name.append(m)});tr.append(name);let cat=document.createElement('td'),p=document.createElement('span');p.className='pill';p.textContent=catNames[e.cat]||e.cat;cat.append(p);tr.append(cat);tr.append(td(e.views||0));let a=document.createElement('td'),w=document.createElement('div');w.className='actions';let eb=document.createElement('button');eb.className='btn orange';eb.textContent='Редагувати';eb.onclick=()=>edit(e);let db=document.createElement('button');db.className='btn red';db.textContent='Видалити';db.onclick=()=>del(e.id);w.append(eb,db);a.append(w);tr.append(a);body.append(tr)})}function renderStats(){let body=$('statsBody');body.innerHTML='';let max=Math.max(1,...allEvents.map(e=>e.views||0));[...allEvents].sort((a,b)=>(b.views||0)-(a.views||0)).forEach(e=>{let tr=document.createElement('tr');tr.append(td(e.title));tr.append(td(catNames[e.cat]||e.cat));tr.append(td(e.views||0));let c=document.createElement('td'),bar=document.createElement('div'),i=document.createElement('i');bar.className='bar';i.style.width=Math.max(4,Math.round(((e.views||0)/max)*100))+'%';bar.append(i);c.append(bar);tr.append(c);body.append(tr)})}
 async function loadEvents(){try{let r=await fetch('/events');allEvents=await readJson(r);renderDash();renderEvents();renderStats()}catch(e){msg('Помилка подій: '+e.message,false)}}async function loadStats(){if(!tok())return;try{let r=await fetch('/stats',{headers:h()}),s=await readJson(r);$('stChat').textContent=s.chat_new||0;$('stDevices').textContent=s.devices||0;if(s.ok===false)msg('Статистика: '+s.error,false)}catch(e){msg('Помилка статистики: '+e.message,false)}}
-async function save(){if(!tok()){msg('Спершу вкажи ADMIN_TOKEN',false);return}let id=$('eventId').value.trim(),payload={title:$('title').value.trim(),date:$('date').value,cat:$('cat').value,recur:$('recur').value.trim(),description:$('description').value.trim(),instruction:$('instruction').value.trim(),link:$('link').value.trim(),audience:$('audience').value.trim()||'Усі працівники',reminders:$('reminders').value.split(',').map(x=>Number(x.trim())).filter(x=>!isNaN(x))};if(!payload.title||!payload.date){msg('Заповни назву і дату',false);return}try{let r=await fetch(id?`/events/${id}`:'/events',{method:id?'PUT':'POST',headers:h({'Content-Type':'application/json'}),body:JSON.stringify(payload)});if(!r.ok)throw new Error((await readJson(r)).detail||'Помилка');closeM();clearForm();await loadEvents();await loadStats();msg('Збережено')}catch(e){msg('Помилка: '+e.message,false)}}async function del(id){if(!tok()){msg('Спершу вкажи ADMIN_TOKEN',false);return}if(!confirm('Видалити подію?'))return;let r=await fetch(`/events/${id}`,{method:'DELETE',headers:h()});if(r.ok||r.status===204){await loadEvents();await loadStats();msg('Видалено')}else msg('Помилка видалення',false)}async function uploadExcel(){if(!tok()){msg('Спершу вкажи ADMIN_TOKEN',false);return}let f=$('excelFile').files[0];if(!f){msg('Вибери Excel файл',false);return}let fd=new FormData();fd.append('file',f);try{let r=await fetch('/events/import-excel',{method:'POST',headers:h(),body:fd});let j=await readJson(r);if(!r.ok)throw new Error(j.detail||JSON.stringify(j));$('excelResult').textContent=`Завантажено: ${j.created}. Пропущено: ${j.skipped_count}.`;await loadEvents();await loadStats();msg('Excel завантажено')}catch(e){msg('Помилка Excel: '+e.message,false)}}
+async function save(){if(!tok()){msg('Спершу вкажи ADMIN_TOKEN',false);return}let id=$('eventId').value.trim(),payload={title:$('title').value.trim(),date:$('date').value,cat:$('cat').value,recur:$('recur').value.trim(),description:$('description').value.trim(),instruction:$('instruction').value.trim(),link:$('link').value.trim(),audience:$('audience').value.trim()||'Усі працівники',reminders:$('reminders').value.split(',').map(x=>Number(x.trim())).filter(x=>!isNaN(x))};if(!payload.title||!payload.date){msg('Заповни назву і дату',false);return}try{let r=await fetch(id?`/events/${id}`:'/events',{method:id?'PUT':'POST',headers:h({'Content-Type':'application/json'}),body:JSON.stringify(payload)});if(!r.ok)throw new Error((await readJson(r)).detail||'Помилка');closeM();clearForm();await loadEvents();await loadStats();msg('Збережено')}catch(e){msg('Помилка: '+e.message,false)}}async function del(id){if(!tok()){msg('Спершу вкажи ADMIN_TOKEN',false);return}if(!confirm('Видалити подію?'))return;let r=await fetch(`/events/${id}`,{method:'DELETE',headers:h()});if(r.ok||r.status===204){await loadEvents();await loadStats();msg('Видалено')}else msg('Помилка видалення',false)}async function uploadExcel(){if(!tok()){msg('Спершу вкажи ADMIN_TOKEN',false);return}let f=$('excelFile').files[0];if(!f){msg('Вибери Excel файл',false);return}let fd=new FormData();fd.append('file',f);try{let r=await fetch('/events/import-excel',{method:'POST',headers:h(),body:fd});let j=await readJson(r);if(!r.ok)throw new Error(j.detail||JSON.stringify(j));$('excelResult').textContent=`${j.message || ''} Пропущено: ${j.skipped_count || 0}.`;await loadEvents();await loadStats();msg(j.message || 'Excel завантажено')}catch(e){msg('Помилка Excel: '+e.message,false)}}
 async function loadReference(){try{let r=await fetch('/reference');allRefs=await readJson(r);let box=$('refList');box.innerHTML='';if(!allRefs.length){box.innerHTML='<div class="muted">Матеріалів поки немає</div>';return}allRefs.forEach(x=>{let d=document.createElement('div');d.className='refitem';let b=document.createElement('b');b.textContent=x.title;let p=document.createElement('div');p.textContent=x.body||'';let l=document.createElement('div');l.className='muted';l.textContent=x.link||'';let a=document.createElement('div');a.className='actions';let delb=document.createElement('button');delb.className='btn red';delb.textContent='Видалити';delb.onclick=()=>deleteRef(x.id);a.append(delb);d.append(b,p,l,a);box.append(d)})}catch(e){msg('Помилка довідника: '+e.message,false)}}async function saveRef(){if(!tok()){msg('Спершу вкажи ADMIN_TOKEN',false);return}let payload={title:$('refTitle').value.trim(),body:$('refBody').value.trim(),link:$('refLink').value.trim()};if(!payload.title){msg('Вкажи назву довідника',false);return}let r=await fetch('/reference',{method:'POST',headers:h({'Content-Type':'application/json'}),body:JSON.stringify(payload)});if(r.ok){$('refTitle').value='';$('refBody').value='';$('refLink').value='';loadReference();loadStats();msg('Додано в довідник')}else msg('Помилка довідника',false)}async function deleteRef(id){if(!confirm('Видалити запис?'))return;let r=await fetch(`/reference/${id}`,{method:'DELETE',headers:h()});if(r.ok||r.status===204){loadReference();loadStats();msg('Запис видалено')}else msg('Помилка видалення',false)}
 async function loadChat(){if(!tok()){msg('Спершу вкажи ADMIN_TOKEN',false);return}try{let r=await fetch('/admin/chat',{headers:h()});allChat=await readJson(r);let box=$('chatList');box.innerHTML='';if(!allChat.length){box.innerHTML='<div class="muted">Повідомлень поки немає</div>';return}allChat.forEach(m=>{let d=document.createElement('div');d.className='chatitem';d.innerHTML='<div class="muted"></div><div class="chatq"></div><textarea rows="3" placeholder="Відповідь"></textarea><div class="actions"><button class="btn green">Відповісти</button><button class="btn red">Видалити</button></div>';d.querySelector('.muted').textContent=m.client_id+' • '+new Date(m.created_at).toLocaleString('uk-UA');d.querySelector('.chatq').textContent=m.question;if(m.answer){let a=document.createElement('div');a.className='chata';a.textContent='Відповідь: '+m.answer;d.insertBefore(a,d.querySelector('textarea'));d.querySelector('textarea').value=m.answer}d.querySelector('.green').onclick=()=>answerChat(m.id,d.querySelector('textarea').value);d.querySelector('.red').onclick=()=>deleteChat(m.id);box.append(d)})}catch(e){msg('Помилка чату: '+e.message,false)}}async function answerChat(id,answer){let r=await fetch(`/admin/chat/${id}/answer`,{method:'POST',headers:h({'Content-Type':'application/json'}),body:JSON.stringify({answer})});if(r.ok){msg('Відповідь збережено');loadChat();loadStats()}else msg('Помилка відповіді',false)}async function deleteChat(id){if(!confirm('Видалити повідомлення?'))return;let r=await fetch(`/admin/chat/${id}`,{method:'DELETE',headers:h()});if(r.ok||r.status===204){msg('Чат видалено');loadChat();loadStats()}else msg('Помилка видалення',false)}
 async function sendPush(){if(!tok()){msg('Спершу вкажи ADMIN_TOKEN',false);return}let title=$('pushTitle').value.trim(),body=$('pushBody').value.trim();if(!title||!body){msg('Заповни заголовок і текст',false);return}try{let r=await fetch('/push/send',{method:'POST',headers:h({'Content-Type':'application/json'}),body:JSON.stringify({title,body})});let j=await readJson(r);$('pushResult').textContent=JSON.stringify(j,null,2);msg(j.configured&&j.sent>0?'Push відправлено':'Push не відправлено: '+(j.error||'дивись статус'),j.configured&&j.sent>0)}catch(e){msg('Помилка push: '+e.message,false)}}async function pushStatus(){if(!tok())return;try{let r=await fetch('/push/status',{headers:h()}),j=await readJson(r);$('pushResult').textContent=JSON.stringify(j,null,2)}catch(e){$('pushResult').textContent='Помилка статусу: '+e.message}}
